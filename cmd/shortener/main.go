@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 var urlStore = make(map[string]string)
@@ -22,11 +24,6 @@ func generateID(n int) string {
 }
 
 func shortenHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "only POST is allowed", http.StatusBadRequest)
-		return
-	}
-
 	body, err := io.ReadAll(r.Body)
 	if err != nil || len(body) == 0 {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -50,12 +47,7 @@ func shortenHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func redirectHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "only GET is allowed", http.StatusBadRequest)
-		return
-	}
-
-	id := strings.TrimPrefix(r.URL.Path, "/")
+	id := chi.URLParam(r, "id")
 	if id == "" {
 		http.Error(w, "missing id", http.StatusBadRequest)
 		return
@@ -70,17 +62,15 @@ func redirectHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
 }
 
-func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" && r.Method == http.MethodPost {
-			shortenHandler(w, r)
-			return
-		}
-		redirectHandler(w, r)
-	})
+func newRouter() chi.Router {
+	r := chi.NewRouter()
+	r.Post("/", shortenHandler)
+	r.Get("/{id}", redirectHandler)
+	return r
+}
 
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+func main() {
+	if err := http.ListenAndServe(":8080", newRouter()); err != nil {
 		panic(err)
 	}
 }

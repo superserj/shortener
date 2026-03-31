@@ -14,33 +14,24 @@ import (
 func TestShortenHandler(t *testing.T) {
 	tests := []struct {
 		name       string
-		method     string
 		body       string
 		wantStatus int
 	}{
 		{
 			name:       "valid url",
-			method:     http.MethodPost,
 			body:       "https://practicum.yandex.ru/",
 			wantStatus: http.StatusCreated,
 		},
 		{
 			name:       "empty body",
-			method:     http.MethodPost,
 			body:       "",
-			wantStatus: http.StatusBadRequest,
-		},
-		{
-			name:       "wrong method",
-			method:     http.MethodGet,
-			body:       "https://practicum.yandex.ru/",
 			wantStatus: http.StatusBadRequest,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := httptest.NewRequest(tt.method, "/", strings.NewReader(tt.body))
+			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tt.body))
 			w := httptest.NewRecorder()
 
 			shortenHandler(w, r)
@@ -65,52 +56,42 @@ func TestRedirectHandler(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		method     string
 		path       string
 		wantStatus int
 		wantURL    string
 	}{
 		{
 			name:       "existing id",
-			method:     http.MethodGet,
 			path:       "/testid",
 			wantStatus: http.StatusTemporaryRedirect,
 			wantURL:    "https://practicum.yandex.ru/",
 		},
 		{
 			name:       "missing id",
-			method:     http.MethodGet,
 			path:       "/unknown",
-			wantStatus: http.StatusBadRequest,
-		},
-		{
-			name:       "empty id",
-			method:     http.MethodGet,
-			path:       "/",
-			wantStatus: http.StatusBadRequest,
-		},
-		{
-			name:       "wrong method",
-			method:     http.MethodPost,
-			path:       "/testid",
 			wantStatus: http.StatusBadRequest,
 		},
 	}
 
+	ts := httptest.NewServer(newRouter())
+	defer ts.Close()
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := httptest.NewRequest(tt.method, tt.path, nil)
-			w := httptest.NewRecorder()
+			client := &http.Client{
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
+			}
 
-			redirectHandler(w, r)
+			resp, err := client.Get(ts.URL + tt.path)
+			require.NoError(t, err)
+			defer resp.Body.Close()
 
-			res := w.Result()
-			defer res.Body.Close()
-
-			assert.Equal(t, tt.wantStatus, res.StatusCode)
+			assert.Equal(t, tt.wantStatus, resp.StatusCode)
 
 			if tt.wantStatus == http.StatusTemporaryRedirect {
-				assert.Equal(t, tt.wantURL, res.Header.Get("Location"))
+				assert.Equal(t, tt.wantURL, resp.Header.Get("Location"))
 			}
 		})
 	}
