@@ -9,7 +9,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/superserj/shortener/internal/config"
 )
+
+func init() {
+	cfg = &config.Config{
+		ServerAddr: "localhost:8080",
+		BaseURL:    "http://localhost:8080",
+	}
+}
 
 func TestShortenHandler(t *testing.T) {
 	tests := []struct {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
@@ -8,9 +9,13 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/superserj/shortener/internal/config"
 )
 
-var urlStore = make(map[string]string)
+var (
+	urlStore = make(map[string]string)
+	cfg      *config.Config
+)
 
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
@@ -39,7 +44,7 @@ func shortenHandler(w http.ResponseWriter, r *http.Request) {
 	id := generateID(8)
 	urlStore[id] = originalURL
 
-	shortURL := "http://localhost:8080/" + id
+	shortURL := cfg.BaseURL + "/" + id
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusCreated)
@@ -70,7 +75,10 @@ func newRouter() chi.Router {
 }
 
 func main() {
-	if err := http.ListenAndServe(":8080", newRouter()); err != nil {
+	cfg = config.New()
+
+	fmt.Println("Starting server on", cfg.ServerAddr)
+	if err := http.ListenAndServe(cfg.ServerAddr, newRouter()); err != nil {
 		panic(err)
 	}
 }
