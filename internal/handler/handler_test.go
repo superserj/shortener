@@ -1,4 +1,4 @@
-package main
+package handler
 
 import (
 	"io"
@@ -7,19 +7,23 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/superserj/shortener/internal/config"
+	"github.com/superserj/shortener/internal/storage"
 )
 
-func init() {
-	cfg = &config.Config{
-		ServerAddr: "localhost:8080",
-		BaseURL:    "http://localhost:8080",
-	}
+func setupRouter(h *Handler) chi.Router {
+	r := chi.NewRouter()
+	r.Post("/", h.ShortenURL)
+	r.Get("/{id}", h.Redirect)
+	return r
 }
 
-func TestShortenHandler(t *testing.T) {
+func TestShortenURL(t *testing.T) {
+	store := storage.NewMemStorage()
+	h := New(store, "http://localhost:8080")
+
 	tests := []struct {
 		name       string
 		body       string
@@ -42,7 +46,7 @@ func TestShortenHandler(t *testing.T) {
 			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tt.body))
 			w := httptest.NewRecorder()
 
-			shortenHandler(w, r)
+			h.ShortenURL(w, r)
 
 			res := w.Result()
 			defer res.Body.Close()
@@ -59,8 +63,10 @@ func TestShortenHandler(t *testing.T) {
 	}
 }
 
-func TestRedirectHandler(t *testing.T) {
-	urlStore["testid"] = "https://practicum.yandex.ru/"
+func TestRedirect(t *testing.T) {
+	store := storage.NewMemStorage()
+	store.Save("testid", "https://practicum.yandex.ru/")
+	h := New(store, "http://localhost:8080")
 
 	tests := []struct {
 		name       string
@@ -81,7 +87,7 @@ func TestRedirectHandler(t *testing.T) {
 		},
 	}
 
-	ts := httptest.NewServer(newRouter())
+	ts := httptest.NewServer(setupRouter(h))
 	defer ts.Close()
 
 	for _, tt := range tests {
