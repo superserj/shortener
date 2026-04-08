@@ -1,6 +1,9 @@
 package config
 
-import "flag"
+import (
+	"flag"
+	"os"
+)
 
 type Config struct {
 	ServerAddr string
@@ -14,6 +17,13 @@ func New() *Config {
 	flag.StringVar(&cfg.BaseURL, "b", "http://localhost:8080", "base address for shortened URL")
 
 	flag.Parse()
+
+	if v := os.Getenv("SERVER_ADDRESS"); v != "" {
+		cfg.ServerAddr = v
+	}
+	if v := os.Getenv("BASE_URL"); v != "" {
+		cfg.BaseURL = v
+	}
 
 	return cfg
 }
