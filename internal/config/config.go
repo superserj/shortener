@@ -8,6 +8,7 @@ import (
 type Config struct {
 	ServerAddr string
 	BaseURL    string
+	LogLevel   string
 }
 
 func New() *Config {
@@ -15,6 +16,7 @@ func New() *Config {
 
 	flag.StringVar(&cfg.ServerAddr, "a", "localhost:8080", "address to run HTTP server")
 	flag.StringVar(&cfg.BaseURL, "b", "http://localhost:8080", "base address for shortened URL")
+	flag.StringVar(&cfg.LogLevel, "l", "info", "log level")
 
 	flag.Parse()
 
@@ -23,6 +25,9 @@ func New() *Config {
 	}
 	if v := os.Getenv("BASE_URL"); v != "" {
 		cfg.BaseURL = v
+	}
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		cfg.LogLevel = v
 	}
 
 	return cfg
