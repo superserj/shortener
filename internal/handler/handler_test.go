@@ -63,6 +63,54 @@ func TestShortenURL(t *testing.T) {
 	}
 }
 
+func TestShortenAPI(t *testing.T) {
+	store := storage.NewMemStorage()
+	h := New(store, "http://localhost:8080")
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{
+			name:       "valid url",
+			body:       `{"url":"https://practicum.yandex.ru/"}`,
+			wantStatus: http.StatusCreated,
+		},
+		{
+			name:       "empty url",
+			body:       `{"url":""}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid json",
+			body:       `not a json`,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(tt.body))
+			w := httptest.NewRecorder()
+
+			h.ShortenAPI(w, r)
+
+			res := w.Result()
+			defer res.Body.Close()
+
+			assert.Equal(t, tt.wantStatus, res.StatusCode)
+
+			if tt.wantStatus == http.StatusCreated {
+				assert.Equal(t, "application/json", res.Header.Get("Content-Type"))
+				body, err := io.ReadAll(res.Body)
+				require.NoError(t, err)
+				assert.Contains(t, string(body), `"result":"http://localhost:8080/`)
+			}
+		})
+	}
+}
+
 func TestRedirect(t *testing.T) {
 	store := storage.NewMemStorage()
 	store.Save("testid", "https://practicum.yandex.ru/")

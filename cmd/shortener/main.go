@@ -15,6 +15,7 @@ import (
 func newRouter(h *handler.Handler) chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.ShortenURL)
+	r.Post("/api/shorten", h.ShortenAPI)
 	r.Get("/{id}", h.Redirect)
 	return r
 }
