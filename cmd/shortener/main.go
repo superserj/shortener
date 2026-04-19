@@ -9,6 +9,7 @@ import (
 	"github.com/superserj/shortener/internal/config"
 	"github.com/superserj/shortener/internal/handler"
 	"github.com/superserj/shortener/internal/logger"
+	"github.com/superserj/shortener/internal/middleware"
 	"github.com/superserj/shortener/internal/storage"
 )
 
@@ -31,7 +32,7 @@ func main() {
 	h := handler.New(store, cfg.BaseURL)
 
 	fmt.Println("Starting server on", cfg.ServerAddr)
-	if err := http.ListenAndServe(cfg.ServerAddr, logger.WithLogging(newRouter(h))); err != nil {
+	if err := http.ListenAndServe(cfg.ServerAddr, logger.WithLogging(middleware.Gzip(newRouter(h)))); err != nil {
 		panic(err)
 	}
 }
