@@ -28,11 +28,25 @@ func main() {
 		log.Fatal(err)
 	}
 
-	store := storage.NewMemStorage()
+	store, err := newStore(cfg.FileStoragePath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if closer, ok := store.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
+
 	h := handler.New(store, cfg.BaseURL)
 
 	fmt.Println("Starting server on", cfg.ServerAddr)
 	if err := http.ListenAndServe(cfg.ServerAddr, logger.WithLogging(middleware.Gzip(newRouter(h)))); err != nil {
 		panic(err)
 	}
+}
+
+func newStore(path string) (storage.Repository, error) {
+	if path == "" {
+		return storage.NewMemStorage(), nil
+	}
+	return storage.NewFileStorage(path)
 }
