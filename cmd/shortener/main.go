@@ -15,6 +15,8 @@ import (
 
 func newRouter(h *handler.Handler) chi.Router {
 	r := chi.NewRouter()
+	r.Use(logger.WithLogging)
+	r.Use(middleware.Gzip)
 	r.Post("/", h.ShortenURL)
 	r.Post("/api/shorten", h.ShortenAPI)
 	r.Get("/{id}", h.Redirect)
@@ -39,7 +41,7 @@ func main() {
 	h := handler.New(store, cfg.BaseURL)
 
 	fmt.Println("Starting server on", cfg.ServerAddr)
-	if err := http.ListenAndServe(cfg.ServerAddr, logger.WithLogging(middleware.Gzip(newRouter(h)))); err != nil {
+	if err := http.ListenAndServe(cfg.ServerAddr, newRouter(h)); err != nil {
 		panic(err)
 	}
 }

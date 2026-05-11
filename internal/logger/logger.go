@@ -52,7 +52,7 @@ func WithLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		data := &responseData{}
+		data := &responseData{status: http.StatusOK}
 		lw := &loggingResponseWriter{ResponseWriter: w, data: data}
 
 		next.ServeHTTP(lw, r)
