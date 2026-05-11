@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"math/rand"
@@ -9,6 +11,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
+
+	"github.com/superserj/shortener/internal/logger"
 	"github.com/superserj/shortener/internal/models"
 	"github.com/superserj/shortener/internal/storage"
 )
@@ -18,12 +23,14 @@ const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 type Handler struct {
 	store   storage.Repository
 	baseURL string
+	db      *sql.DB
 }
 
-func New(store storage.Repository, baseURL string) *Handler {
+func New(store storage.Repository, baseURL string, db *sql.DB) *Handler {
 	return &Handler{
 		store:   store,
 		baseURL: baseURL,
+		db:      db,
 	}
 }
 
@@ -67,6 +74,25 @@ func (h *Handler) ShortenAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(models.ShortenResponse{Result: h.baseURL + "/" + id})
+}
+
+func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
+	if h.db == nil {
+		logger.Log.Info("ping: database not configured")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
+	defer cancel()
+
+	if err := h.db.PingContext(ctx); err != nil {
+		logger.Log.Info("ping failed", zap.Error(err))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {

@@ -22,7 +22,7 @@ func setupRouter(h *Handler) chi.Router {
 
 func TestShortenURL(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080")
+	h := New(store, "http://localhost:8080", nil)
 
 	tests := []struct {
 		name       string
@@ -65,7 +65,7 @@ func TestShortenURL(t *testing.T) {
 
 func TestShortenAPI(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080")
+	h := New(store, "http://localhost:8080", nil)
 
 	tests := []struct {
 		name       string
@@ -111,10 +111,24 @@ func TestShortenAPI(t *testing.T) {
 	}
 }
 
+func TestPingWithoutDB(t *testing.T) {
+	h := New(storage.NewMemStorage(), "http://localhost:8080", nil)
+
+	r := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	w := httptest.NewRecorder()
+
+	h.Ping(w, r)
+
+	res := w.Result()
+	defer res.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, res.StatusCode)
+}
+
 func TestRedirect(t *testing.T) {
 	store := storage.NewMemStorage()
 	store.Save("testid", "https://practicum.yandex.ru/")
-	h := New(store, "http://localhost:8080")
+	h := New(store, "http://localhost:8080", nil)
 
 	tests := []struct {
 		name       string
