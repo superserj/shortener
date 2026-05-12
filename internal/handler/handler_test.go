@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +11,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/superserj/shortener/internal/logger"
 	"github.com/superserj/shortener/internal/storage"
 )
+
+func init() {
+	_ = logger.Initialize("error")
+}
 
 func setupRouter(h *Handler) chi.Router {
 	r := chi.NewRouter()
@@ -127,7 +134,7 @@ func TestPingWithoutDB(t *testing.T) {
 
 func TestRedirect(t *testing.T) {
 	store := storage.NewMemStorage()
-	store.Save("testid", "https://practicum.yandex.ru/")
+	require.NoError(t, store.Save(context.Background(), "testid", "https://practicum.yandex.ru/"))
 	h := New(store, "http://localhost:8080", nil)
 
 	tests := []struct {

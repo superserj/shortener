@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"math/rand"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -19,6 +21,11 @@ import (
 )
 
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+var (
+	rngMu sync.Mutex
+	rng   = rand.New(rand.NewSource(time.Now().UnixNano()))
+)
 
 type Handler struct {
 	store   storage.Repository
@@ -48,7 +55,11 @@ func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := generateID(8)
-	h.store.Save(id, originalURL)
+	if err := h.store.Save(r.Context(), id, originalURL); err != nil {
+		logger.Log.Warn("save failed", zap.Error(err))
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusCreated)
@@ -69,7 +80,11 @@ func (h *Handler) ShortenAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := generateID(8)
-	h.store.Save(id, originalURL)
+	if err := h.store.Save(r.Context(), id, originalURL); err != nil {
+		logger.Log.Warn("save failed", zap.Error(err))
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -102,9 +117,14 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	originalURL, ok := h.store.Get(id)
-	if !ok {
+	originalURL, err := h.store.Get(r.Context(), id)
+	if errors.Is(err, storage.ErrNotFound) {
 		http.Error(w, "not found", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		logger.Log.Warn("get failed", zap.Error(err))
+		http.Error(w, "get failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -112,7 +132,8 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 }
 
 func generateID(n int) string {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rngMu.Lock()
+	defer rngMu.Unlock()
 	b := make([]byte, n)
 	for i := range b {
 		b[i] = charset[rng.Intn(len(charset))]

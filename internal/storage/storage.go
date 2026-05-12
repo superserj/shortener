@@ -1,10 +1,16 @@
 package storage
 
-import "sync"
+import (
+	"context"
+	"errors"
+	"sync"
+)
+
+var ErrNotFound = errors.New("not found")
 
 type Repository interface {
-	Save(id, url string)
-	Get(id string) (string, bool)
+	Save(ctx context.Context, id, url string) error
+	Get(ctx context.Context, id string) (string, error)
 }
 
 type MemStorage struct {
@@ -18,15 +24,19 @@ func NewMemStorage() *MemStorage {
 	}
 }
 
-func (s *MemStorage) Save(id, url string) {
+func (s *MemStorage) Save(_ context.Context, id, url string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.urls[id] = url
+	return nil
 }
 
-func (s *MemStorage) Get(id string) (string, bool) {
+func (s *MemStorage) Get(_ context.Context, id string) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	url, ok := s.urls[id]
-	return url, ok
+	if !ok {
+		return "", ErrNotFound
+	}
+	return url, nil
 }

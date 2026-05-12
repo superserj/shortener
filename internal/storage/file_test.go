@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -10,23 +12,24 @@ import (
 
 func TestFileStoragePersistence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "urls.json")
+	ctx := context.Background()
 
 	first, err := NewFileStorage(path)
 	require.NoError(t, err)
-	first.Save("abc", "https://practicum.yandex.ru/")
-	first.Save("def", "https://example.com/")
+	require.NoError(t, first.Save(ctx, "abc", "https://practicum.yandex.ru/"))
+	require.NoError(t, first.Save(ctx, "def", "https://example.com/"))
 	require.NoError(t, first.Close())
 
 	second, err := NewFileStorage(path)
 	require.NoError(t, err)
 	defer second.Close()
 
-	got, ok := second.Get("abc")
-	assert.True(t, ok)
+	got, err := second.Get(ctx, "abc")
+	require.NoError(t, err)
 	assert.Equal(t, "https://practicum.yandex.ru/", got)
 
-	got, ok = second.Get("def")
-	assert.True(t, ok)
+	got, err = second.Get(ctx, "def")
+	require.NoError(t, err)
 	assert.Equal(t, "https://example.com/", got)
 }
 
@@ -37,6 +40,6 @@ func TestFileStorageEmptyFile(t *testing.T) {
 	require.NoError(t, err)
 	defer s.Close()
 
-	_, ok := s.Get("anything")
-	assert.False(t, ok)
+	_, err = s.Get(context.Background(), "anything")
+	assert.True(t, errors.Is(err, ErrNotFound))
 }

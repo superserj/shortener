@@ -33,20 +33,20 @@ func main() {
 		log.Fatal(err)
 	}
 
-	store, err := newStore(cfg.FileStoragePath)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if closer, ok := store.(interface{ Close() error }); ok {
-		defer closer.Close()
-	}
-
 	db, err := newDB(cfg.DatabaseDSN)
 	if err != nil {
 		log.Fatal(err)
 	}
 	if db != nil {
 		defer db.Close()
+	}
+
+	store, err := newStore(db, cfg.FileStoragePath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if closer, ok := store.(interface{ Close() error }); ok {
+		defer closer.Close()
 	}
 
 	h := handler.New(store, cfg.BaseURL, db)
@@ -57,7 +57,10 @@ func main() {
 	}
 }
 
-func newStore(path string) (storage.Repository, error) {
+func newStore(db *sql.DB, path string) (storage.Repository, error) {
+	if db != nil {
+		return storage.NewDBStorage(db)
+	}
 	if path == "" {
 		return storage.NewMemStorage(), nil
 	}

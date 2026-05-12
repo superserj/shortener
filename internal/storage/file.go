@@ -1,12 +1,17 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"os"
 	"strconv"
+	"sync"
+
+	"go.uber.org/zap"
+
+	"github.com/superserj/shortener/internal/logger"
 )
 
 type Record struct {
@@ -16,6 +21,7 @@ type Record struct {
 }
 
 type FileStorage struct {
+	mu      sync.Mutex
 	mem     *MemStorage
 	file    *os.File
 	encoder *json.Encoder
@@ -61,7 +67,7 @@ func loadRecords(path string, mem *MemStorage) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		mem.Save(rec.ShortURL, rec.OriginalURL)
+		_ = mem.Save(context.Background(), rec.ShortURL, rec.OriginalURL)
 		if n, convErr := strconv.Atoi(rec.UUID); convErr == nil && n > nextID {
 			nextID = n
 		}
@@ -69,21 +75,25 @@ func loadRecords(path string, mem *MemStorage) (int, error) {
 	return nextID, nil
 }
 
-func (s *FileStorage) Save(id, url string) {
-	s.mem.Save(id, url)
-	s.nextID++
+func (s *FileStorage) Save(ctx context.Context, id, url string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	rec := &Record{
-		UUID:        strconv.Itoa(s.nextID),
+		UUID:        strconv.Itoa(s.nextID + 1),
 		ShortURL:    id,
 		OriginalURL: url,
 	}
 	if err := s.encoder.Encode(rec); err != nil {
-		log.Printf("failed to persist record: %v", err)
+		logger.Log.Warn("failed to persist record", zap.Error(err))
+		return err
 	}
+	s.nextID++
+	return s.mem.Save(ctx, id, url)
 }
 
-func (s *FileStorage) Get(id string) (string, bool) {
-	return s.mem.Get(id)
+func (s *FileStorage) Get(ctx context.Context, id string) (string, error) {
+	return s.mem.Get(ctx, id)
 }
 
 func (s *FileStorage) Close() error {
