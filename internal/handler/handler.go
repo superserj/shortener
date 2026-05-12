@@ -55,14 +55,21 @@ func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := generateID(8)
+	status := http.StatusCreated
 	if err := h.store.Save(r.Context(), id, originalURL); err != nil {
-		logger.Log.Warn("save failed", zap.Error(err))
-		http.Error(w, "save failed", http.StatusInternalServerError)
-		return
+		var conflict *storage.ConflictError
+		if errors.As(err, &conflict) {
+			id = conflict.ShortURL
+			status = http.StatusConflict
+		} else {
+			logger.Log.Warn("save failed", zap.Error(err))
+			http.Error(w, "save failed", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(http.StatusCreated)
+	w.WriteHeader(status)
 	w.Write([]byte(h.baseURL + "/" + id))
 }
 
@@ -80,14 +87,21 @@ func (h *Handler) ShortenAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := generateID(8)
+	status := http.StatusCreated
 	if err := h.store.Save(r.Context(), id, originalURL); err != nil {
-		logger.Log.Warn("save failed", zap.Error(err))
-		http.Error(w, "save failed", http.StatusInternalServerError)
-		return
+		var conflict *storage.ConflictError
+		if errors.As(err, &conflict) {
+			id = conflict.ShortURL
+			status = http.StatusConflict
+		} else {
+			logger.Log.Warn("save failed", zap.Error(err))
+			http.Error(w, "save failed", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(models.ShortenResponse{Result: h.baseURL + "/" + id})
 }
 

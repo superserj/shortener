@@ -80,6 +80,9 @@ func (s *FileStorage) Save(ctx context.Context, id, url string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if existing, ok := s.mem.Find(url); ok {
+		return &ConflictError{ShortURL: existing}
+	}
 	rec := &Record{
 		UUID:        strconv.Itoa(s.nextID + 1),
 		ShortURL:    id,

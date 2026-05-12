@@ -31,10 +31,24 @@ func NewDBStorage(db *sql.DB) (*DBStorage, error) {
 }
 
 func (s *DBStorage) Save(ctx context.Context, id, url string) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO short_urls (short_url, original_url) VALUES ($1, $2)`,
-		id, url)
-	return err
+	var stored string
+	err := s.db.QueryRowContext(ctx,
+		`INSERT INTO short_urls (short_url, original_url) VALUES ($1, $2)
+		 ON CONFLICT (original_url) DO NOTHING
+		 RETURNING short_url`,
+		id, url).Scan(&stored)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT short_url FROM short_urls WHERE original_url = $1`, url).
+		Scan(&stored); err != nil {
+		return err
+	}
+	return &ConflictError{ShortURL: stored}
 }
 
 func (s *DBStorage) SaveBatch(ctx context.Context, items []BatchItem) error {
@@ -46,7 +60,8 @@ func (s *DBStorage) SaveBatch(ctx context.Context, items []BatchItem) error {
 		args = append(args, it.ID, it.URL)
 	}
 	query := "INSERT INTO short_urls (short_url, original_url) VALUES " +
-		strings.Join(placeholders, ", ")
+		strings.Join(placeholders, ", ") +
+		" ON CONFLICT (original_url) DO NOTHING"
 	_, err := s.db.ExecContext(ctx, query, args...)
 	return err
 }

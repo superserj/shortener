@@ -8,6 +8,14 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+type ConflictError struct {
+	ShortURL string
+}
+
+func (e *ConflictError) Error() string {
+	return "url already shortened: " + e.ShortURL
+}
+
 type BatchItem struct {
 	ID  string
 	URL string
@@ -33,14 +41,35 @@ func NewMemStorage() *MemStorage {
 func (s *MemStorage) Save(_ context.Context, id, url string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if existing, ok := s.findByURL(url); ok {
+		return &ConflictError{ShortURL: existing}
+	}
 	s.urls[id] = url
 	return nil
+}
+
+func (s *MemStorage) findByURL(url string) (string, bool) {
+	for id, u := range s.urls {
+		if u == url {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+func (s *MemStorage) Find(url string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.findByURL(url)
 }
 
 func (s *MemStorage) SaveBatch(_ context.Context, items []BatchItem) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, it := range items {
+		if _, ok := s.findByURL(it.URL); ok {
+			continue
+		}
 		s.urls[it.ID] = it.URL
 	}
 	return nil
