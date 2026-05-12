@@ -8,8 +8,14 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+type BatchItem struct {
+	ID  string
+	URL string
+}
+
 type Repository interface {
 	Save(ctx context.Context, id, url string) error
+	SaveBatch(ctx context.Context, items []BatchItem) error
 	Get(ctx context.Context, id string) (string, error)
 }
 
@@ -28,6 +34,15 @@ func (s *MemStorage) Save(_ context.Context, id, url string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.urls[id] = url
+	return nil
+}
+
+func (s *MemStorage) SaveBatch(_ context.Context, items []BatchItem) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, it := range items {
+		s.urls[it.ID] = it.URL
+	}
 	return nil
 }
 

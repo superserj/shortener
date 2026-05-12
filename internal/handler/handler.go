@@ -91,6 +91,45 @@ func (h *Handler) ShortenAPI(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(models.ShortenResponse{Result: h.baseURL + "/" + id})
 }
 
+func (h *Handler) ShortenBatch(w http.ResponseWriter, r *http.Request) {
+	var req []models.ShortenBatchRequestItem
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if len(req) == 0 {
+		http.Error(w, "empty batch", http.StatusBadRequest)
+		return
+	}
+
+	items := make([]storage.BatchItem, 0, len(req))
+	resp := make([]models.ShortenBatchResponseItem, 0, len(req))
+
+	for _, it := range req {
+		original := strings.TrimSpace(it.OriginalURL)
+		if original == "" {
+			http.Error(w, "empty url in batch", http.StatusBadRequest)
+			return
+		}
+		id := generateID(8)
+		items = append(items, storage.BatchItem{ID: id, URL: original})
+		resp = append(resp, models.ShortenBatchResponseItem{
+			CorrelationID: it.CorrelationID,
+			ShortURL:      h.baseURL + "/" + id,
+		})
+	}
+
+	if err := h.store.SaveBatch(r.Context(), items); err != nil {
+		logger.Log.Warn("save batch failed", zap.Error(err))
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp)
+}
+
 func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
 		logger.Log.Info("ping: database not configured")

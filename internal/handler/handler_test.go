@@ -118,6 +118,62 @@ func TestShortenAPI(t *testing.T) {
 	}
 }
 
+func TestShortenBatch(t *testing.T) {
+	store := storage.NewMemStorage()
+	h := New(store, "http://localhost:8080", nil)
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantCount  int
+	}{
+		{
+			name:       "valid batch",
+			body:       `[{"correlation_id":"a","original_url":"https://example.com/1"},{"correlation_id":"b","original_url":"https://example.com/2"}]`,
+			wantStatus: http.StatusCreated,
+			wantCount:  2,
+		},
+		{
+			name:       "empty batch",
+			body:       `[]`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "empty url in batch",
+			body:       `[{"correlation_id":"a","original_url":""}]`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid json",
+			body:       `not json`,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/api/shorten/batch", strings.NewReader(tt.body))
+			w := httptest.NewRecorder()
+
+			h.ShortenBatch(w, r)
+
+			res := w.Result()
+			defer res.Body.Close()
+
+			assert.Equal(t, tt.wantStatus, res.StatusCode)
+
+			if tt.wantStatus == http.StatusCreated {
+				assert.Equal(t, "application/json", res.Header.Get("Content-Type"))
+				body, err := io.ReadAll(res.Body)
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantCount, strings.Count(string(body), `"short_url"`))
+				assert.Contains(t, string(body), `"correlation_id":"a"`)
+			}
+		})
+	}
+}
+
 func TestPingWithoutDB(t *testing.T) {
 	h := New(storage.NewMemStorage(), "http://localhost:8080", nil)
 

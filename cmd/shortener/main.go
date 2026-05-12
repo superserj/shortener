@@ -21,6 +21,7 @@ func newRouter(h *handler.Handler) chi.Router {
 	r.Use(middleware.Gzip)
 	r.Post("/", h.ShortenURL)
 	r.Post("/api/shorten", h.ShortenAPI)
+	r.Post("/api/shorten/batch", h.ShortenBatch)
 	r.Get("/ping", h.Ping)
 	r.Get("/{id}", h.Redirect)
 	return r

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -90,6 +91,31 @@ func (s *FileStorage) Save(ctx context.Context, id, url string) error {
 	}
 	s.nextID++
 	return s.mem.Save(ctx, id, url)
+}
+
+func (s *FileStorage) SaveBatch(ctx context.Context, items []BatchItem) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	for i, it := range items {
+		rec := &Record{
+			UUID:        strconv.Itoa(s.nextID + i + 1),
+			ShortURL:    it.ID,
+			OriginalURL: it.URL,
+		}
+		if err := enc.Encode(rec); err != nil {
+			logger.Log.Warn("failed to encode batch record", zap.Error(err))
+			return err
+		}
+	}
+	if _, err := s.file.Write(buf.Bytes()); err != nil {
+		logger.Log.Warn("failed to persist batch", zap.Error(err))
+		return err
+	}
+	s.nextID += len(items)
+	return s.mem.SaveBatch(ctx, items)
 }
 
 func (s *FileStorage) Get(ctx context.Context, id string) (string, error) {
