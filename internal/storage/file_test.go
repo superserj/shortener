@@ -16,8 +16,8 @@ func TestFileStoragePersistence(t *testing.T) {
 
 	first, err := NewFileStorage(path)
 	require.NoError(t, err)
-	require.NoError(t, first.Save(ctx, "abc", "https://practicum.yandex.ru/"))
-	require.NoError(t, first.Save(ctx, "def", "https://example.com/"))
+	require.NoError(t, first.Save(ctx, "abc", "https://practicum.yandex.ru/", "user1"))
+	require.NoError(t, first.Save(ctx, "def", "https://example.com/", "user1"))
 	require.NoError(t, first.Close())
 
 	second, err := NewFileStorage(path)

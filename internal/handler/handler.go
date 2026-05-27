@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
+	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/logger"
 	"github.com/superserj/shortener/internal/models"
 	"github.com/superserj/shortener/internal/storage"
@@ -54,9 +55,10 @@ func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, _ := auth.UserIDFromContext(r.Context())
 	id := generateID(8)
 	status := http.StatusCreated
-	if err := h.store.Save(r.Context(), id, originalURL); err != nil {
+	if err := h.store.Save(r.Context(), id, originalURL, userID); err != nil {
 		var conflict *storage.ConflictError
 		if errors.As(err, &conflict) {
 			id = conflict.ShortURL
@@ -86,9 +88,10 @@ func (h *Handler) ShortenAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, _ := auth.UserIDFromContext(r.Context())
 	id := generateID(8)
 	status := http.StatusCreated
-	if err := h.store.Save(r.Context(), id, originalURL); err != nil {
+	if err := h.store.Save(r.Context(), id, originalURL, userID); err != nil {
 		var conflict *storage.ConflictError
 		if errors.As(err, &conflict) {
 			id = conflict.ShortURL
@@ -133,7 +136,8 @@ func (h *Handler) ShortenBatch(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	if err := h.store.SaveBatch(r.Context(), items); err != nil {
+	userID, _ := auth.UserIDFromContext(r.Context())
+	if err := h.store.SaveBatch(r.Context(), items, userID); err != nil {
 		logger.Log.Warn("save batch failed", zap.Error(err))
 		http.Error(w, "save failed", http.StatusInternalServerError)
 		return

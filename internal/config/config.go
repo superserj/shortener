@@ -11,6 +11,7 @@ type Config struct {
 	LogLevel        string
 	FileStoragePath string
 	DatabaseDSN     string
+	AuthSecret      string
 }
 
 func New() *Config {
@@ -21,6 +22,7 @@ func New() *Config {
 	flag.StringVar(&cfg.LogLevel, "l", "info", "log level")
 	flag.StringVar(&cfg.FileStoragePath, "f", "/tmp/short-url-db.json", "path to file storage")
 	flag.StringVar(&cfg.DatabaseDSN, "d", "", "postgres DSN")
+	flag.StringVar(&cfg.AuthSecret, "s", "shortener-default-secret", "secret key for auth cookie signature")
 
 	flag.Parse()
 
@@ -38,6 +40,9 @@ func New() *Config {
 	}
 	if v := os.Getenv("DATABASE_DSN"); v != "" {
 		cfg.DatabaseDSN = v
+	}
+	if v := os.Getenv("AUTH_SECRET"); v != "" {
+		cfg.AuthSecret = v
 	}
 
 	return cfg

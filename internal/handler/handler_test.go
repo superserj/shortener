@@ -190,7 +190,7 @@ func TestPingWithoutDB(t *testing.T) {
 
 func TestRedirect(t *testing.T) {
 	store := storage.NewMemStorage()
-	require.NoError(t, store.Save(context.Background(), "testid", "https://practicum.yandex.ru/"))
+	require.NoError(t, store.Save(context.Background(), "testid", "https://practicum.yandex.ru/", ""))
 	h := New(store, "http://localhost:8080", nil)
 
 	tests := []struct {
