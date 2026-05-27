@@ -6,7 +6,10 @@ import (
 	"sync"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound = errors.New("not found")
+	ErrDeleted  = errors.New("deleted")
+)
 
 type ConflictError struct {
 	ShortURL string
@@ -31,11 +34,13 @@ type Repository interface {
 	SaveBatch(ctx context.Context, items []BatchItem, userID string) error
 	Get(ctx context.Context, id string) (string, error)
 	ListByUser(ctx context.Context, userID string) ([]UserURL, error)
+	MarkDeleted(ctx context.Context, userID string, ids []string) error
 }
 
 type record struct {
-	url    string
-	userID string
+	url     string
+	userID  string
+	deleted bool
 }
 
 type MemStorage struct {
@@ -93,6 +98,9 @@ func (s *MemStorage) Get(_ context.Context, id string) (string, error) {
 	if !ok {
 		return "", ErrNotFound
 	}
+	if rec.deleted {
+		return "", ErrDeleted
+	}
 	return rec.url, nil
 }
 
@@ -104,9 +112,26 @@ func (s *MemStorage) ListByUser(_ context.Context, userID string) ([]UserURL, er
 	defer s.mu.RUnlock()
 	var result []UserURL
 	for id, rec := range s.urls {
-		if rec.userID == userID {
+		if rec.userID == userID && !rec.deleted {
 			result = append(result, UserURL{ShortURL: id, OriginalURL: rec.url})
 		}
 	}
 	return result, nil
+}
+
+func (s *MemStorage) MarkDeleted(_ context.Context, userID string, ids []string) error {
+	if userID == "" || len(ids) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range ids {
+		rec, ok := s.urls[id]
+		if !ok || rec.userID != userID {
+			continue
+		}
+		rec.deleted = true
+		s.urls[id] = rec
+	}
+	return nil
 }

@@ -28,17 +28,23 @@ var (
 	rng   = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
 
+type DeleteEnqueuer interface {
+	Enqueue(ctx context.Context, userID string, ids []string)
+}
+
 type Handler struct {
 	store   storage.Repository
 	baseURL string
 	db      *sql.DB
+	deleter DeleteEnqueuer
 }
 
-func New(store storage.Repository, baseURL string, db *sql.DB) *Handler {
+func New(store storage.Repository, baseURL string, db *sql.DB, deleter DeleteEnqueuer) *Handler {
 	return &Handler{
 		store:   store,
 		baseURL: baseURL,
 		db:      db,
+		deleter: deleter,
 	}
 }
 
@@ -179,6 +185,10 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusBadRequest)
 		return
 	}
+	if errors.Is(err, storage.ErrDeleted) {
+		http.Error(w, "gone", http.StatusGone)
+		return
+	}
 	if err != nil {
 		logger.Log.Warn("get failed", zap.Error(err))
 		http.Error(w, "get failed", http.StatusInternalServerError)
@@ -221,6 +231,27 @@ func (h *Handler) UserURLs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handler) DeleteUserURLs(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var ids []string
+	if err := json.NewDecoder(r.Body).Decode(&ids); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if len(ids) == 0 {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	h.deleter.Enqueue(r.Context(), userID, ids)
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func generateID(n int) string {

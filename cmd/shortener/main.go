@@ -1,15 +1,21 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	_ "github.com/lib/pq"
 	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/config"
+	"github.com/superserj/shortener/internal/deleter"
 	"github.com/superserj/shortener/internal/handler"
 	"github.com/superserj/shortener/internal/logger"
 	"github.com/superserj/shortener/internal/middleware"
@@ -25,6 +31,7 @@ func newRouter(h *handler.Handler, a *auth.Authenticator) chi.Router {
 	r.Post("/api/shorten", h.ShortenAPI)
 	r.Post("/api/shorten/batch", h.ShortenBatch)
 	r.Get("/api/user/urls", h.UserURLs)
+	r.Delete("/api/user/urls", h.DeleteUserURLs)
 	r.Get("/ping", h.Ping)
 	r.Get("/{id}", h.Redirect)
 	return r
@@ -53,13 +60,36 @@ func main() {
 		defer closer.Close()
 	}
 
-	h := handler.New(store, cfg.BaseURL, db)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	del := deleter.New(store)
+	delDone := make(chan struct{})
+	go func() {
+		del.Run(ctx)
+		close(delDone)
+	}()
+
+	h := handler.New(store, cfg.BaseURL, db, del)
 	a := auth.New(cfg.AuthSecret)
 
-	fmt.Println("Starting server on", cfg.ServerAddr)
-	if err := http.ListenAndServe(cfg.ServerAddr, newRouter(h, a)); err != nil {
-		panic(err)
+	srv := &http.Server{Addr: cfg.ServerAddr, Handler: newRouter(h, a)}
+
+	go func() {
+		fmt.Println("Starting server on", cfg.ServerAddr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	}()
+
+	<-ctx.Done()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Println("server shutdown:", err)
 	}
+	<-delDone
 }
 
 func newStore(db *sql.DB, path string) (storage.Repository, error) {

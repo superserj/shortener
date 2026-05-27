@@ -132,6 +132,10 @@ func (s *FileStorage) ListByUser(ctx context.Context, userID string) ([]UserURL,
 	return s.mem.ListByUser(ctx, userID)
 }
 
+func (s *FileStorage) MarkDeleted(ctx context.Context, userID string, ids []string) error {
+	return s.mem.MarkDeleted(ctx, userID, ids)
+}
+
 func (s *FileStorage) Close() error {
 	return s.file.Close()
 }

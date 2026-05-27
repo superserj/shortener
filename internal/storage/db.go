@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 )
 
@@ -69,15 +70,21 @@ func (s *DBStorage) SaveBatch(ctx context.Context, items []BatchItem, userID str
 }
 
 func (s *DBStorage) Get(ctx context.Context, id string) (string, error) {
-	var original string
+	var (
+		original  string
+		isDeleted bool
+	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT original_url FROM short_urls WHERE short_url = $1`, id).
-		Scan(&original)
+		`SELECT original_url, is_deleted FROM short_urls WHERE short_url = $1`, id).
+		Scan(&original, &isDeleted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	if err != nil {
 		return "", err
+	}
+	if isDeleted {
+		return "", ErrDeleted
 	}
 	return original, nil
 }
@@ -87,7 +94,7 @@ func (s *DBStorage) ListByUser(ctx context.Context, userID string) ([]UserURL, e
 		return nil, nil
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT short_url, original_url FROM short_urls WHERE user_id = $1`, userID)
+		`SELECT short_url, original_url FROM short_urls WHERE user_id = $1 AND is_deleted = FALSE`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -105,6 +112,17 @@ func (s *DBStorage) ListByUser(ctx context.Context, userID string) ([]UserURL, e
 		return nil, err
 	}
 	return result, nil
+}
+
+func (s *DBStorage) MarkDeleted(ctx context.Context, userID string, ids []string) error {
+	if userID == "" || len(ids) == 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE short_urls SET is_deleted = TRUE
+		 WHERE user_id = $1 AND short_url = ANY($2) AND is_deleted = FALSE`,
+		userID, pq.Array(ids))
+	return err
 }
 
 func nullableUserID(userID string) interface{} {

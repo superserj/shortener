@@ -23,6 +23,20 @@ func init() {
 	_ = logger.Initialize("error")
 }
 
+type noopDeleter struct{}
+
+func (noopDeleter) Enqueue(_ context.Context, _ string, _ []string) {}
+
+type recordDeleter struct {
+	userID string
+	ids    []string
+}
+
+func (r *recordDeleter) Enqueue(_ context.Context, userID string, ids []string) {
+	r.userID = userID
+	r.ids = append(r.ids, ids...)
+}
+
 func setupRouter(h *Handler) chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.ShortenURL)
@@ -32,7 +46,7 @@ func setupRouter(h *Handler) chi.Router {
 
 func TestShortenURL(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil)
+	h := New(store, "http://localhost:8080", nil, noopDeleter{})
 
 	tests := []struct {
 		name       string
@@ -75,7 +89,7 @@ func TestShortenURL(t *testing.T) {
 
 func TestShortenAPI(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil)
+	h := New(store, "http://localhost:8080", nil, noopDeleter{})
 
 	tests := []struct {
 		name       string
@@ -123,7 +137,7 @@ func TestShortenAPI(t *testing.T) {
 
 func TestShortenBatch(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil)
+	h := New(store, "http://localhost:8080", nil, noopDeleter{})
 
 	tests := []struct {
 		name       string
@@ -186,7 +200,7 @@ func TestUserURLs(t *testing.T) {
 	require.NoError(t, store.Save(ctx, "cd2", "https://example.com/", userID))
 	require.NoError(t, store.Save(ctx, "zz9", "https://other.example.com/", "another-user"))
 
-	h := New(store, "http://localhost:8080", nil)
+	h := New(store, "http://localhost:8080", nil, noopDeleter{})
 
 	t.Run("returns urls for current user", func(t *testing.T) {
 		r := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil).WithContext(ctx)
@@ -227,8 +241,50 @@ func TestUserURLs(t *testing.T) {
 	})
 }
 
+func TestDeleteUserURLs(t *testing.T) {
+	store := storage.NewMemStorage()
+
+	t.Run("accepts ids and enqueues for user", func(t *testing.T) {
+		rec := &recordDeleter{}
+		h := New(store, "http://localhost:8080", nil, rec)
+
+		body := strings.NewReader(`["a","b","c"]`)
+		r := httptest.NewRequest(http.MethodDelete, "/api/user/urls", body).
+			WithContext(auth.WithUserID(context.Background(), "user-1"))
+		w := httptest.NewRecorder()
+		h.DeleteUserURLs(w, r)
+
+		assert.Equal(t, http.StatusAccepted, w.Result().StatusCode)
+		assert.Equal(t, "user-1", rec.userID)
+		assert.Equal(t, []string{"a", "b", "c"}, rec.ids)
+	})
+
+	t.Run("rejects without user", func(t *testing.T) {
+		h := New(store, "http://localhost:8080", nil, noopDeleter{})
+
+		body := strings.NewReader(`["a"]`)
+		r := httptest.NewRequest(http.MethodDelete, "/api/user/urls", body)
+		w := httptest.NewRecorder()
+		h.DeleteUserURLs(w, r)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Result().StatusCode)
+	})
+
+	t.Run("rejects invalid json", func(t *testing.T) {
+		h := New(store, "http://localhost:8080", nil, noopDeleter{})
+
+		body := strings.NewReader(`not-json`)
+		r := httptest.NewRequest(http.MethodDelete, "/api/user/urls", body).
+			WithContext(auth.WithUserID(context.Background(), "user-1"))
+		w := httptest.NewRecorder()
+		h.DeleteUserURLs(w, r)
+
+		assert.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
+	})
+}
+
 func TestPingWithoutDB(t *testing.T) {
-	h := New(storage.NewMemStorage(), "http://localhost:8080", nil)
+	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{})
 
 	r := httptest.NewRequest(http.MethodGet, "/ping", nil)
 	w := httptest.NewRecorder()
@@ -244,7 +300,10 @@ func TestPingWithoutDB(t *testing.T) {
 func TestRedirect(t *testing.T) {
 	store := storage.NewMemStorage()
 	require.NoError(t, store.Save(context.Background(), "testid", "https://practicum.yandex.ru/", ""))
-	h := New(store, "http://localhost:8080", nil)
+	h := New(store, "http://localhost:8080", nil, noopDeleter{})
+
+	require.NoError(t, store.Save(context.Background(), "deletedid", "https://gone.example.com/", "owner"))
+	require.NoError(t, store.MarkDeleted(context.Background(), "owner", []string{"deletedid"}))
 
 	tests := []struct {
 		name       string
@@ -262,6 +321,11 @@ func TestRedirect(t *testing.T) {
 			name:       "missing id",
 			path:       "/unknown",
 			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "deleted id",
+			path:       "/deletedid",
+			wantStatus: http.StatusGone,
 		},
 	}
 
