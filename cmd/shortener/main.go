@@ -24,6 +24,7 @@ func newRouter(h *handler.Handler, a *auth.Authenticator) chi.Router {
 	r.Post("/", h.ShortenURL)
 	r.Post("/api/shorten", h.ShortenAPI)
 	r.Post("/api/shorten/batch", h.ShortenBatch)
+	r.Get("/api/user/urls", h.UserURLs)
 	r.Get("/ping", h.Ping)
 	r.Get("/{id}", h.Redirect)
 	return r

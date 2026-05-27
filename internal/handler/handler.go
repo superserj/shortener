@@ -188,6 +188,41 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
 }
 
+func (h *Handler) UserURLs(w http.ResponseWriter, r *http.Request) {
+	if auth.CookieInvalidFromContext(r.Context()) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	urls, err := h.store.ListByUser(r.Context(), userID)
+	if err != nil {
+		logger.Log.Warn("list by user failed", zap.Error(err))
+		http.Error(w, "list failed", http.StatusInternalServerError)
+		return
+	}
+	if len(urls) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	resp := make([]models.UserURLItem, 0, len(urls))
+	for _, u := range urls {
+		resp = append(resp, models.UserURLItem{
+			ShortURL:    h.baseURL + "/" + u.ShortURL,
+			OriginalURL: u.OriginalURL,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
 func generateID(n int) string {
 	rngMu.Lock()
 	defer rngMu.Unlock()

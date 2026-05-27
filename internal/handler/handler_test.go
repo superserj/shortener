@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/logger"
+	"github.com/superserj/shortener/internal/models"
 	"github.com/superserj/shortener/internal/storage"
 )
 
@@ -172,6 +175,56 @@ func TestShortenBatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUserURLs(t *testing.T) {
+	const userID = "test-user"
+	ctx := auth.WithUserID(context.Background(), userID)
+
+	store := storage.NewMemStorage()
+	require.NoError(t, store.Save(ctx, "ab1", "https://practicum.yandex.ru/", userID))
+	require.NoError(t, store.Save(ctx, "cd2", "https://example.com/", userID))
+	require.NoError(t, store.Save(ctx, "zz9", "https://other.example.com/", "another-user"))
+
+	h := New(store, "http://localhost:8080", nil)
+
+	t.Run("returns urls for current user", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil).WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.UserURLs(w, r)
+
+		res := w.Result()
+		defer res.Body.Close()
+
+		require.Equal(t, http.StatusOK, res.StatusCode)
+		body, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
+
+		var items []models.UserURLItem
+		require.NoError(t, json.Unmarshal(body, &items))
+		assert.Len(t, items, 2)
+		for _, item := range items {
+			assert.Contains(t, item.ShortURL, "http://localhost:8080/")
+		}
+	})
+
+	t.Run("returns 204 when user has no urls", func(t *testing.T) {
+		emptyCtx := auth.WithUserID(context.Background(), "empty-user")
+		r := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil).WithContext(emptyCtx)
+		w := httptest.NewRecorder()
+		h.UserURLs(w, r)
+
+		assert.Equal(t, http.StatusNoContent, w.Result().StatusCode)
+	})
+
+	t.Run("returns 401 on invalid cookie", func(t *testing.T) {
+		invalidCtx := auth.WithCookieInvalid(context.Background())
+		r := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil).WithContext(invalidCtx)
+		w := httptest.NewRecorder()
+		h.UserURLs(w, r)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Result().StatusCode)
+	})
 }
 
 func TestPingWithoutDB(t *testing.T) {
