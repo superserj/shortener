@@ -45,7 +45,7 @@ func main() {
 
 	store, err := newStore(context.Background(), cfg.DatabaseDSN, cfg.FileStoragePath)
 	if err != nil {
-		log.Fatal(err)
+		logger.Log.Fatal("init storage", zap.Error(err))
 	}
 	if closer, ok := store.(interface{ Close() error }); ok {
 		defer closer.Close()
@@ -72,7 +72,7 @@ func main() {
 	go func() {
 		logger.Log.Info("starting server", zap.String("addr", cfg.ServerAddr))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal(err)
+			logger.Log.Fatal("listen and serve", zap.Error(err))
 		}
 	}()
 
@@ -83,7 +83,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Println("server shutdown:", err)
+		logger.Log.Error("server shutdown", zap.Error(err))
 	}
 
 	delCancel()
