@@ -2,9 +2,11 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,12 +14,29 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/logger"
+	"github.com/superserj/shortener/internal/models"
 	"github.com/superserj/shortener/internal/storage"
 )
 
-func init() {
+func TestMain(m *testing.M) {
 	_ = logger.Initialize("error")
+	os.Exit(m.Run())
+}
+
+type noopDeleter struct{}
+
+func (noopDeleter) Enqueue(_ string, _ []string) {}
+
+type recordDeleter struct {
+	userID string
+	ids    []string
+}
+
+func (r *recordDeleter) Enqueue(userID string, ids []string) {
+	r.userID = userID
+	r.ids = append(r.ids, ids...)
 }
 
 func setupRouter(h *Handler) chi.Router {
@@ -29,7 +48,7 @@ func setupRouter(h *Handler) chi.Router {
 
 func TestShortenURL(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil)
+	h := New(store, "http://localhost:8080", nil, noopDeleter{})
 
 	tests := []struct {
 		name       string
@@ -70,9 +89,30 @@ func TestShortenURL(t *testing.T) {
 	}
 }
 
+func TestShortenURLConflict(t *testing.T) {
+	store := storage.NewMemStorage()
+	h := New(store, "http://localhost:8080", nil, noopDeleter{})
+
+	const url = "https://practicum.yandex.ru/"
+
+	first := httptest.NewRecorder()
+	h.ShortenURL(first, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(url)))
+	require.Equal(t, http.StatusCreated, first.Result().StatusCode)
+
+	second := httptest.NewRecorder()
+	h.ShortenURL(second, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(url)))
+	res := second.Result()
+	defer res.Body.Close()
+
+	assert.Equal(t, http.StatusConflict, res.StatusCode)
+	body, err := io.ReadAll(res.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "http://localhost:8080/")
+}
+
 func TestShortenAPI(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil)
+	h := New(store, "http://localhost:8080", nil, noopDeleter{})
 
 	tests := []struct {
 		name       string
@@ -120,7 +160,7 @@ func TestShortenAPI(t *testing.T) {
 
 func TestShortenBatch(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil)
+	h := New(store, "http://localhost:8080", nil, noopDeleter{})
 
 	tests := []struct {
 		name       string
@@ -174,8 +214,100 @@ func TestShortenBatch(t *testing.T) {
 	}
 }
 
+func TestUserURLs(t *testing.T) {
+	const userID = "test-user"
+	ctx := auth.WithUserID(context.Background(), userID)
+
+	store := storage.NewMemStorage()
+	require.NoError(t, store.Save(ctx, "ab1", "https://practicum.yandex.ru/", userID))
+	require.NoError(t, store.Save(ctx, "cd2", "https://example.com/", userID))
+	require.NoError(t, store.Save(ctx, "zz9", "https://other.example.com/", "another-user"))
+
+	h := New(store, "http://localhost:8080", nil, noopDeleter{})
+
+	t.Run("returns urls for current user", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil).WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.UserURLs(w, r)
+
+		res := w.Result()
+		defer res.Body.Close()
+
+		require.Equal(t, http.StatusOK, res.StatusCode)
+		body, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
+
+		var items []models.UserURLItem
+		require.NoError(t, json.Unmarshal(body, &items))
+		assert.Len(t, items, 2)
+		for _, item := range items {
+			assert.Contains(t, item.ShortURL, "http://localhost:8080/")
+		}
+	})
+
+	t.Run("returns 204 when user has no urls", func(t *testing.T) {
+		emptyCtx := auth.WithUserID(context.Background(), "empty-user")
+		r := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil).WithContext(emptyCtx)
+		w := httptest.NewRecorder()
+		h.UserURLs(w, r)
+
+		assert.Equal(t, http.StatusNoContent, w.Result().StatusCode)
+	})
+
+	t.Run("returns 401 on invalid cookie", func(t *testing.T) {
+		invalidCtx := auth.WithCookieInvalid(context.Background())
+		r := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil).WithContext(invalidCtx)
+		w := httptest.NewRecorder()
+		h.UserURLs(w, r)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Result().StatusCode)
+	})
+}
+
+func TestDeleteUserURLs(t *testing.T) {
+	store := storage.NewMemStorage()
+
+	t.Run("accepts ids and enqueues for user", func(t *testing.T) {
+		rec := &recordDeleter{}
+		h := New(store, "http://localhost:8080", nil, rec)
+
+		body := strings.NewReader(`["a","b","c"]`)
+		r := httptest.NewRequest(http.MethodDelete, "/api/user/urls", body).
+			WithContext(auth.WithUserID(context.Background(), "user-1"))
+		w := httptest.NewRecorder()
+		h.DeleteUserURLs(w, r)
+
+		assert.Equal(t, http.StatusAccepted, w.Result().StatusCode)
+		assert.Equal(t, "user-1", rec.userID)
+		assert.Equal(t, []string{"a", "b", "c"}, rec.ids)
+	})
+
+	t.Run("rejects without user", func(t *testing.T) {
+		h := New(store, "http://localhost:8080", nil, noopDeleter{})
+
+		body := strings.NewReader(`["a"]`)
+		r := httptest.NewRequest(http.MethodDelete, "/api/user/urls", body)
+		w := httptest.NewRecorder()
+		h.DeleteUserURLs(w, r)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Result().StatusCode)
+	})
+
+	t.Run("rejects invalid json", func(t *testing.T) {
+		h := New(store, "http://localhost:8080", nil, noopDeleter{})
+
+		body := strings.NewReader(`not-json`)
+		r := httptest.NewRequest(http.MethodDelete, "/api/user/urls", body).
+			WithContext(auth.WithUserID(context.Background(), "user-1"))
+		w := httptest.NewRecorder()
+		h.DeleteUserURLs(w, r)
+
+		assert.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
+	})
+}
+
 func TestPingWithoutDB(t *testing.T) {
-	h := New(storage.NewMemStorage(), "http://localhost:8080", nil)
+	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{})
 
 	r := httptest.NewRequest(http.MethodGet, "/ping", nil)
 	w := httptest.NewRecorder()
@@ -190,8 +322,11 @@ func TestPingWithoutDB(t *testing.T) {
 
 func TestRedirect(t *testing.T) {
 	store := storage.NewMemStorage()
-	require.NoError(t, store.Save(context.Background(), "testid", "https://practicum.yandex.ru/"))
-	h := New(store, "http://localhost:8080", nil)
+	require.NoError(t, store.Save(context.Background(), "testid", "https://practicum.yandex.ru/", ""))
+	h := New(store, "http://localhost:8080", nil, noopDeleter{})
+
+	require.NoError(t, store.Save(context.Background(), "deletedid", "https://gone.example.com/", "owner"))
+	require.NoError(t, store.MarkDeleted(context.Background(), "owner", []string{"deletedid"}))
 
 	tests := []struct {
 		name       string
@@ -208,7 +343,12 @@ func TestRedirect(t *testing.T) {
 		{
 			name:       "missing id",
 			path:       "/unknown",
-			wantStatus: http.StatusBadRequest,
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "deleted id",
+			path:       "/deletedid",
+			wantStatus: http.StatusGone,
 		},
 	}
 

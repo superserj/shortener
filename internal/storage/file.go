@@ -19,6 +19,8 @@ type Record struct {
 	UUID        string `json:"uuid"`
 	ShortURL    string `json:"short_url"`
 	OriginalURL string `json:"original_url"`
+	UserID      string `json:"user_id,omitempty"`
+	IsDeleted   bool   `json:"is_deleted,omitempty"`
 }
 
 type FileStorage struct {
@@ -68,7 +70,11 @@ func loadRecords(path string, mem *MemStorage) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		_ = mem.Save(context.Background(), rec.ShortURL, rec.OriginalURL)
+		if rec.IsDeleted {
+			_ = mem.MarkDeleted(context.Background(), rec.UserID, []string{rec.ShortURL})
+			continue
+		}
+		_ = mem.Save(context.Background(), rec.ShortURL, rec.OriginalURL, rec.UserID)
 		if n, convErr := strconv.Atoi(rec.UUID); convErr == nil && n > nextID {
 			nextID = n
 		}
@@ -76,7 +82,7 @@ func loadRecords(path string, mem *MemStorage) (int, error) {
 	return nextID, nil
 }
 
-func (s *FileStorage) Save(ctx context.Context, id, url string) error {
+func (s *FileStorage) Save(ctx context.Context, id, url, userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -87,16 +93,17 @@ func (s *FileStorage) Save(ctx context.Context, id, url string) error {
 		UUID:        strconv.Itoa(s.nextID + 1),
 		ShortURL:    id,
 		OriginalURL: url,
+		UserID:      userID,
 	}
 	if err := s.encoder.Encode(rec); err != nil {
 		logger.Log.Warn("failed to persist record", zap.Error(err))
 		return err
 	}
 	s.nextID++
-	return s.mem.Save(ctx, id, url)
+	return s.mem.Save(ctx, id, url, userID)
 }
 
-func (s *FileStorage) SaveBatch(ctx context.Context, items []BatchItem) error {
+func (s *FileStorage) SaveBatch(ctx context.Context, items []BatchItem, userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -107,6 +114,7 @@ func (s *FileStorage) SaveBatch(ctx context.Context, items []BatchItem) error {
 			UUID:        strconv.Itoa(s.nextID + i + 1),
 			ShortURL:    it.ID,
 			OriginalURL: it.URL,
+			UserID:      userID,
 		}
 		if err := enc.Encode(rec); err != nil {
 			logger.Log.Warn("failed to encode batch record", zap.Error(err))
@@ -118,11 +126,37 @@ func (s *FileStorage) SaveBatch(ctx context.Context, items []BatchItem) error {
 		return err
 	}
 	s.nextID += len(items)
-	return s.mem.SaveBatch(ctx, items)
+	return s.mem.SaveBatch(ctx, items, userID)
 }
 
 func (s *FileStorage) Get(ctx context.Context, id string) (string, error) {
 	return s.mem.Get(ctx, id)
+}
+
+func (s *FileStorage) ListByUser(ctx context.Context, userID string) ([]UserURL, error) {
+	return s.mem.ListByUser(ctx, userID)
+}
+
+func (s *FileStorage) MarkDeleted(ctx context.Context, userID string, ids []string) error {
+	if userID == "" || len(ids) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	for _, id := range ids {
+		if err := enc.Encode(&Record{ShortURL: id, UserID: userID, IsDeleted: true}); err != nil {
+			logger.Log.Warn("failed to encode delete record", zap.Error(err))
+			return err
+		}
+	}
+	if _, err := s.file.Write(buf.Bytes()); err != nil {
+		logger.Log.Warn("failed to persist delete", zap.Error(err))
+		return err
+	}
+	return s.mem.MarkDeleted(ctx, userID, ids)
 }
 
 func (s *FileStorage) Close() error {

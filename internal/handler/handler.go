@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
+	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/logger"
 	"github.com/superserj/shortener/internal/models"
 	"github.com/superserj/shortener/internal/storage"
@@ -27,17 +27,27 @@ var (
 	rng   = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
 
+type DeleteEnqueuer interface {
+	Enqueue(userID string, ids []string)
+}
+
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
 type Handler struct {
 	store   storage.Repository
 	baseURL string
-	db      *sql.DB
+	pinger  Pinger
+	deleter DeleteEnqueuer
 }
 
-func New(store storage.Repository, baseURL string, db *sql.DB) *Handler {
+func New(store storage.Repository, baseURL string, pinger Pinger, deleter DeleteEnqueuer) *Handler {
 	return &Handler{
 		store:   store,
 		baseURL: baseURL,
-		db:      db,
+		pinger:  pinger,
+		deleter: deleter,
 	}
 }
 
@@ -54,9 +64,10 @@ func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, _ := auth.UserIDFromContext(r.Context())
 	id := generateID(8)
 	status := http.StatusCreated
-	if err := h.store.Save(r.Context(), id, originalURL); err != nil {
+	if err := h.store.Save(r.Context(), id, originalURL, userID); err != nil {
 		var conflict *storage.ConflictError
 		if errors.As(err, &conflict) {
 			id = conflict.ShortURL
@@ -86,9 +97,10 @@ func (h *Handler) ShortenAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, _ := auth.UserIDFromContext(r.Context())
 	id := generateID(8)
 	status := http.StatusCreated
-	if err := h.store.Save(r.Context(), id, originalURL); err != nil {
+	if err := h.store.Save(r.Context(), id, originalURL, userID); err != nil {
 		var conflict *storage.ConflictError
 		if errors.As(err, &conflict) {
 			id = conflict.ShortURL
@@ -133,7 +145,8 @@ func (h *Handler) ShortenBatch(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	if err := h.store.SaveBatch(r.Context(), items); err != nil {
+	userID, _ := auth.UserIDFromContext(r.Context())
+	if err := h.store.SaveBatch(r.Context(), items, userID); err != nil {
 		logger.Log.Warn("save batch failed", zap.Error(err))
 		http.Error(w, "save failed", http.StatusInternalServerError)
 		return
@@ -145,7 +158,7 @@ func (h *Handler) ShortenBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
-	if h.db == nil {
+	if h.pinger == nil {
 		logger.Log.Info("ping: database not configured")
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -154,7 +167,7 @@ func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
 	defer cancel()
 
-	if err := h.db.PingContext(ctx); err != nil {
+	if err := h.pinger.Ping(ctx); err != nil {
 		logger.Log.Info("ping failed", zap.Error(err))
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -172,7 +185,11 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 
 	originalURL, err := h.store.Get(r.Context(), id)
 	if errors.Is(err, storage.ErrNotFound) {
-		http.Error(w, "not found", http.StatusBadRequest)
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, storage.ErrDeleted) {
+		http.Error(w, "gone", http.StatusGone)
 		return
 	}
 	if err != nil {
@@ -182,6 +199,62 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
+}
+
+func (h *Handler) UserURLs(w http.ResponseWriter, r *http.Request) {
+	if auth.CookieInvalidFromContext(r.Context()) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	urls, err := h.store.ListByUser(r.Context(), userID)
+	if err != nil {
+		logger.Log.Warn("list by user failed", zap.Error(err))
+		http.Error(w, "list failed", http.StatusInternalServerError)
+		return
+	}
+	if len(urls) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	resp := make([]models.UserURLItem, 0, len(urls))
+	for _, u := range urls {
+		resp = append(resp, models.UserURLItem{
+			ShortURL:    h.baseURL + "/" + u.ShortURL,
+			OriginalURL: u.OriginalURL,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handler) DeleteUserURLs(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var ids []string
+	if err := json.NewDecoder(r.Body).Decode(&ids); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if len(ids) == 0 {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	h.deleter.Enqueue(userID, ids)
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func generateID(n int) string {
