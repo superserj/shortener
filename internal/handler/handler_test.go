@@ -89,6 +89,27 @@ func TestShortenURL(t *testing.T) {
 	}
 }
 
+func TestShortenURLConflict(t *testing.T) {
+	store := storage.NewMemStorage()
+	h := New(store, "http://localhost:8080", nil, noopDeleter{})
+
+	const url = "https://practicum.yandex.ru/"
+
+	first := httptest.NewRecorder()
+	h.ShortenURL(first, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(url)))
+	require.Equal(t, http.StatusCreated, first.Result().StatusCode)
+
+	second := httptest.NewRecorder()
+	h.ShortenURL(second, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(url)))
+	res := second.Result()
+	defer res.Body.Close()
+
+	assert.Equal(t, http.StatusConflict, res.StatusCode)
+	body, err := io.ReadAll(res.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "http://localhost:8080/")
+}
+
 func TestShortenAPI(t *testing.T) {
 	store := storage.NewMemStorage()
 	h := New(store, "http://localhost:8080", nil, noopDeleter{})

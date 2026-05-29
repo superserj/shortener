@@ -20,6 +20,7 @@ type Record struct {
 	ShortURL    string `json:"short_url"`
 	OriginalURL string `json:"original_url"`
 	UserID      string `json:"user_id,omitempty"`
+	IsDeleted   bool   `json:"is_deleted,omitempty"`
 }
 
 type FileStorage struct {
@@ -68,6 +69,10 @@ func loadRecords(path string, mem *MemStorage) (int, error) {
 		}
 		if err != nil {
 			return 0, err
+		}
+		if rec.IsDeleted {
+			_ = mem.MarkDeleted(context.Background(), rec.UserID, []string{rec.ShortURL})
+			continue
 		}
 		_ = mem.Save(context.Background(), rec.ShortURL, rec.OriginalURL, rec.UserID)
 		if n, convErr := strconv.Atoi(rec.UUID); convErr == nil && n > nextID {
@@ -133,6 +138,24 @@ func (s *FileStorage) ListByUser(ctx context.Context, userID string) ([]UserURL,
 }
 
 func (s *FileStorage) MarkDeleted(ctx context.Context, userID string, ids []string) error {
+	if userID == "" || len(ids) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	for _, id := range ids {
+		if err := enc.Encode(&Record{ShortURL: id, UserID: userID, IsDeleted: true}); err != nil {
+			logger.Log.Warn("failed to encode delete record", zap.Error(err))
+			return err
+		}
+	}
+	if _, err := s.file.Write(buf.Bytes()); err != nil {
+		logger.Log.Warn("failed to persist delete", zap.Error(err))
+		return err
+	}
 	return s.mem.MarkDeleted(ctx, userID, ids)
 }
 
