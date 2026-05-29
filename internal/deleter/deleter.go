@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	defaultChannelSize = 256
-	defaultFlushPeriod = 2 * time.Second
+	maxWriters  = 16
+	flushPeriod = 2 * time.Second
 )
 
 type item struct {
@@ -23,32 +23,43 @@ type item struct {
 
 type Worker struct {
 	in     chan item
+	sem    chan struct{}
 	store  storage.Repository
 	period time.Duration
+
+	mu     sync.Mutex
 	wg     sync.WaitGroup
+	closed bool
 }
 
 func New(store storage.Repository) *Worker {
 	return &Worker{
-		in:     make(chan item, defaultChannelSize),
+		in:     make(chan item, 1),
+		sem:    make(chan struct{}, maxWriters),
 		store:  store,
-		period: defaultFlushPeriod,
+		period: flushPeriod,
 	}
 }
 
-func (w *Worker) Enqueue(ctx context.Context, userID string, ids []string) {
+func (w *Worker) Enqueue(userID string, ids []string) {
 	if userID == "" || len(ids) == 0 {
 		return
 	}
+
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
 	w.wg.Add(1)
+	w.mu.Unlock()
+
+	w.sem <- struct{}{}
 	go func() {
 		defer w.wg.Done()
+		defer func() { <-w.sem }()
 		for _, id := range ids {
-			select {
-			case w.in <- item{userID: userID, id: id}:
-			case <-ctx.Done():
-				return
-			}
+			w.in <- item{userID: userID, id: id}
 		}
 	}()
 }
@@ -58,35 +69,42 @@ func (w *Worker) Run(ctx context.Context) {
 	defer ticker.Stop()
 
 	buf := make(map[string][]string)
-	flush := func() {
-		if len(buf) == 0 {
-			return
-		}
-		for uid, ids := range buf {
-			if err := w.store.MarkDeleted(ctx, uid, ids); err != nil {
-				logger.Log.Warn("mark deleted failed", zap.String("user", uid), zap.Error(err))
-			}
-		}
-		buf = make(map[string][]string)
-	}
-
 	for {
 		select {
 		case it := <-w.in:
 			buf[it.userID] = append(buf[it.userID], it.id)
 		case <-ticker.C:
-			flush()
+			w.flush(ctx, buf)
 		case <-ctx.Done():
-			w.wg.Wait()
-			for {
-				select {
-				case it := <-w.in:
-					buf[it.userID] = append(buf[it.userID], it.id)
-				default:
-					flush()
-					return
-				}
-			}
+			w.shutdown(buf)
+			return
 		}
+	}
+}
+
+func (w *Worker) shutdown(buf map[string][]string) {
+	w.mu.Lock()
+	w.closed = true
+	w.mu.Unlock()
+
+	go func() {
+		w.wg.Wait()
+		close(w.in)
+	}()
+	for it := range w.in {
+		buf[it.userID] = append(buf[it.userID], it.id)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	w.flush(ctx, buf)
+	cancel()
+}
+
+func (w *Worker) flush(ctx context.Context, buf map[string][]string) {
+	for uid, ids := range buf {
+		if err := w.store.MarkDeleted(ctx, uid, ids); err != nil {
+			logger.Log.Warn("mark deleted failed", zap.String("user", uid), zap.Error(err))
+		}
+		delete(buf, uid)
 	}
 }

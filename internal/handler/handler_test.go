@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -19,20 +20,21 @@ import (
 	"github.com/superserj/shortener/internal/storage"
 )
 
-func init() {
+func TestMain(m *testing.M) {
 	_ = logger.Initialize("error")
+	os.Exit(m.Run())
 }
 
 type noopDeleter struct{}
 
-func (noopDeleter) Enqueue(_ context.Context, _ string, _ []string) {}
+func (noopDeleter) Enqueue(_ string, _ []string) {}
 
 type recordDeleter struct {
 	userID string
 	ids    []string
 }
 
-func (r *recordDeleter) Enqueue(_ context.Context, userID string, ids []string) {
+func (r *recordDeleter) Enqueue(userID string, ids []string) {
 	r.userID = userID
 	r.ids = append(r.ids, ids...)
 }
@@ -320,7 +322,7 @@ func TestRedirect(t *testing.T) {
 		{
 			name:       "missing id",
 			path:       "/unknown",
-			wantStatus: http.StatusBadRequest,
+			wantStatus: http.StatusNotFound,
 		},
 		{
 			name:       "deleted id",

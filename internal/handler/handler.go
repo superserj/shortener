@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -29,21 +28,25 @@ var (
 )
 
 type DeleteEnqueuer interface {
-	Enqueue(ctx context.Context, userID string, ids []string)
+	Enqueue(userID string, ids []string)
+}
+
+type Pinger interface {
+	Ping(ctx context.Context) error
 }
 
 type Handler struct {
 	store   storage.Repository
 	baseURL string
-	db      *sql.DB
+	pinger  Pinger
 	deleter DeleteEnqueuer
 }
 
-func New(store storage.Repository, baseURL string, db *sql.DB, deleter DeleteEnqueuer) *Handler {
+func New(store storage.Repository, baseURL string, pinger Pinger, deleter DeleteEnqueuer) *Handler {
 	return &Handler{
 		store:   store,
 		baseURL: baseURL,
-		db:      db,
+		pinger:  pinger,
 		deleter: deleter,
 	}
 }
@@ -155,7 +158,7 @@ func (h *Handler) ShortenBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
-	if h.db == nil {
+	if h.pinger == nil {
 		logger.Log.Info("ping: database not configured")
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -164,7 +167,7 @@ func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
 	defer cancel()
 
-	if err := h.db.PingContext(ctx); err != nil {
+	if err := h.pinger.Ping(ctx); err != nil {
 		logger.Log.Info("ping failed", zap.Error(err))
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -182,7 +185,7 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 
 	originalURL, err := h.store.Get(r.Context(), id)
 	if errors.Is(err, storage.ErrNotFound) {
-		http.Error(w, "not found", http.StatusBadRequest)
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	if errors.Is(err, storage.ErrDeleted) {
@@ -250,7 +253,7 @@ func (h *Handler) DeleteUserURLs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.deleter.Enqueue(r.Context(), userID, ids)
+	h.deleter.Enqueue(userID, ids)
 	w.WriteHeader(http.StatusAccepted)
 }
 

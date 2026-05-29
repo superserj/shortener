@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"os/signal"
@@ -12,7 +10,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	_ "github.com/lib/pq"
+	"go.uber.org/zap"
+
 	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/config"
 	"github.com/superserj/shortener/internal/deleter"
@@ -44,15 +43,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	db, err := newDB(cfg.DatabaseDSN)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if db != nil {
-		defer db.Close()
-	}
-
-	store, err := newStore(db, cfg.FileStoragePath)
+	store, err := newStore(context.Background(), cfg.DatabaseDSN, cfg.FileStoragePath)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -60,28 +51,33 @@ func main() {
 		defer closer.Close()
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	var pinger handler.Pinger
+	if p, ok := store.(handler.Pinger); ok {
+		pinger = p
+	}
 
+	delCtx, delCancel := context.WithCancel(context.Background())
 	del := deleter.New(store)
 	delDone := make(chan struct{})
 	go func() {
-		del.Run(ctx)
+		del.Run(delCtx)
 		close(delDone)
 	}()
 
-	h := handler.New(store, cfg.BaseURL, db, del)
+	h := handler.New(store, cfg.BaseURL, pinger, del)
 	a := auth.New(cfg.AuthSecret)
 
 	srv := &http.Server{Addr: cfg.ServerAddr, Handler: newRouter(h, a)}
 
 	go func() {
-		fmt.Println("Starting server on", cfg.ServerAddr)
+		logger.Log.Info("starting server", zap.String("addr", cfg.ServerAddr))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal(err)
 		}
 	}()
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	<-ctx.Done()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -89,22 +85,17 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Println("server shutdown:", err)
 	}
+
+	delCancel()
 	<-delDone
 }
 
-func newStore(db *sql.DB, path string) (storage.Repository, error) {
-	if db != nil {
-		return storage.NewDBStorage(db)
+func newStore(ctx context.Context, dsn, path string) (storage.Repository, error) {
+	if dsn != "" {
+		return storage.NewDBStorage(ctx, dsn)
 	}
 	if path == "" {
 		return storage.NewMemStorage(), nil
 	}
 	return storage.NewFileStorage(path)
-}
-
-func newDB(dsn string) (*sql.DB, error) {
-	if dsn == "" {
-		return nil, nil
-	}
-	return sql.Open("postgres", dsn)
 }

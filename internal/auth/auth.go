@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	CookieName    = "user_id"
+	cookieName    = "user_id"
 	cookieMaxAge  = 60 * 60 * 24 * 30
 	userIDByteLen = 16
 )
@@ -58,7 +58,7 @@ func (a *Authenticator) Verify(value string) (string, error) {
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		cookie, err := r.Cookie(CookieName)
+		cookie, err := r.Cookie(cookieName)
 		switch {
 		case errors.Is(err, http.ErrNoCookie):
 			userID, issueErr := newUserID()
@@ -93,7 +93,7 @@ func WithCookieInvalid(ctx context.Context) context.Context {
 
 func (a *Authenticator) makeCookie(userID string) *http.Cookie {
 	return &http.Cookie{
-		Name:     CookieName,
+		Name:     cookieName,
 		Value:    a.Sign(userID),
 		Path:     "/",
 		MaxAge:   cookieMaxAge,

@@ -2,6 +2,7 @@ package deleter
 
 import (
 	"context"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -13,8 +14,9 @@ import (
 	"github.com/superserj/shortener/internal/storage"
 )
 
-func init() {
+func TestMain(m *testing.M) {
 	_ = logger.Initialize("error")
+	os.Exit(m.Run())
 }
 
 type spyStore struct {
@@ -55,8 +57,8 @@ func TestWorkerBatchesByUser(t *testing.T) {
 		close(done)
 	}()
 
-	w.Enqueue(ctx, "user-1", []string{"abc", "def"})
-	w.Enqueue(ctx, "user-2", []string{"ghi"})
+	w.Enqueue("user-1", []string{"abc", "def"})
+	w.Enqueue("user-2", []string{"ghi"})
 
 	assert.Eventually(t, func() bool {
 		store.mu.Lock()
@@ -89,7 +91,7 @@ func TestWorkerFlushesOnShutdown(t *testing.T) {
 		close(done)
 	}()
 
-	w.Enqueue(ctx, "u", []string{"id1"})
+	w.Enqueue("u", []string{"id1"})
 	time.Sleep(20 * time.Millisecond)
 
 	cancel()
@@ -101,7 +103,7 @@ func TestWorkerFlushesOnShutdown(t *testing.T) {
 
 func TestEnqueueIgnoresEmpty(t *testing.T) {
 	w := New(newSpyStore())
-	w.Enqueue(context.Background(), "", []string{"x"})
-	w.Enqueue(context.Background(), "u", nil)
+	w.Enqueue("", []string{"x"})
+	w.Enqueue("u", nil)
 	assert.Equal(t, 0, len(w.in))
 }

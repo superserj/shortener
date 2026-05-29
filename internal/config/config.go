@@ -26,22 +26,22 @@ func New() *Config {
 
 	flag.Parse()
 
-	if v := os.Getenv("SERVER_ADDRESS"); v != "" {
+	if v, ok := os.LookupEnv("SERVER_ADDRESS"); ok {
 		cfg.ServerAddr = v
 	}
-	if v := os.Getenv("BASE_URL"); v != "" {
+	if v, ok := os.LookupEnv("BASE_URL"); ok {
 		cfg.BaseURL = v
 	}
-	if v := os.Getenv("LOG_LEVEL"); v != "" {
+	if v, ok := os.LookupEnv("LOG_LEVEL"); ok {
 		cfg.LogLevel = v
 	}
-	if v := os.Getenv("FILE_STORAGE_PATH"); v != "" {
+	if v, ok := os.LookupEnv("FILE_STORAGE_PATH"); ok {
 		cfg.FileStoragePath = v
 	}
-	if v := os.Getenv("DATABASE_DSN"); v != "" {
+	if v, ok := os.LookupEnv("DATABASE_DSN"); ok {
 		cfg.DatabaseDSN = v
 	}
-	if v := os.Getenv("AUTH_SECRET"); v != "" {
+	if v, ok := os.LookupEnv("AUTH_SECRET"); ok {
 		cfg.AuthSecret = v
 	}
 

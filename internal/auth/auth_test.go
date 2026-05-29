@@ -50,7 +50,7 @@ func TestMiddlewareIssuesCookieWhenAbsent(t *testing.T) {
 	defer res.Body.Close()
 
 	require.NotEmpty(t, res.Cookies(), "expected Set-Cookie when no cookie was sent")
-	assert.Equal(t, CookieName, res.Cookies()[0].Name)
+	assert.Equal(t, cookieName, res.Cookies()[0].Name)
 	assert.NotEmpty(t, observedUserID)
 	assert.False(t, observedInvalid)
 }
@@ -64,7 +64,7 @@ func TestMiddlewareKeepsValidCookie(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: CookieName, Value: a.Sign("user-42")})
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: a.Sign("user-42")})
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -86,7 +86,7 @@ func TestMiddlewareFlagsTamperedCookie(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: CookieName, Value: "garbage:deadbeef"})
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: "garbage:deadbeef"})
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
