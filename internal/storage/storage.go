@@ -110,7 +110,19 @@ func (s *MemStorage) ListByUser(_ context.Context, userID string) ([]UserURL, er
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var result []UserURL
+
+	// считаем заранее, чтобы слайс не рос переаллокациями с копированием
+	n := 0
+	for _, rec := range s.urls {
+		if rec.userID == userID && !rec.deleted {
+			n++
+		}
+	}
+	if n == 0 {
+		return nil, nil
+	}
+
+	result := make([]UserURL, 0, n)
 	for id, rec := range s.urls {
 		if rec.userID == userID && !rec.deleted {
 			result = append(result, UserURL{ShortURL: id, OriginalURL: rec.url})

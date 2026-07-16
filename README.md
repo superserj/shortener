@@ -42,3 +42,53 @@ git fetch template && git checkout template/v2 .github
 - **Clean Architecture**
 - **Hexagonal Architecture**
 - **Layered Architecture**
+
+## Профилирование
+
+Профили потребления памяти сняты с `/debug/pprof/heap` сразу после нагрузки
+в 20000 созданий коротких ссылок и 20000 переходов по ним: `profiles/base.pprof` —
+до оптимизации, `profiles/result.pprof` — после.
+
+Оба профиля сняты с `GODEBUG=memprofilerate=1`. По умолчанию рантайм семплирует
+одну аллокацию на 512 КБ, и на куче в 7 МБ такой профиль показывает пачку строк,
+которые целиком состоят из ошибки выборки: узел в полмегабайта может оказаться
+одним объектом в 704 байта, пойманным в одном запуске и не пойманным в другом.
+С точным семплированием в дифф попадает только то, что действительно изменилось.
+
+Что показал `base.pprof`: почти треть удерживаемой памяти висела на
+`net/textproto.readMIMEHeader`, хотя живых соединений было восемь, — заголовки
+давно должны были стать мусором. Причина нашлась в `auth.Verify`: `strings.SplitN`
+возвращает подстроку, которая делит массив-основу с исходной строкой. Такой `userID`
+уезжал в хранилище и удерживал HTTP-заголовок запроса целиком на всё время жизни
+записи. Теперь `strings.Cut` и копия через `strings.Clone`.
+
+Второе место нашлось бенчмарками, а не профилем: нагрузка не ходит в
+`GET /api/user/urls`, поэтому в профиле его нет. `MemStorage.ListByUser` наполнял
+слайс через `append` без преаллокации, и тот рос переаллокациями с копированием.
+Теперь количество совпадений считается заранее:
+
+```
+было:  BenchmarkMemStorageListByUser-12  1287645 ns/op  1471046 B/op  18 allocs/op
+стало: BenchmarkMemStorageListByUser-12   554251 ns/op   327691 B/op   1 allocs/op
+```
+
+Сравнение профилей:
+
+```
+$ go tool pprof -top -diff_base=profiles/base.pprof profiles/result.pprof
+Type: inuse_space
+Showing nodes accounting for -1561.89kB, 21.77% of 7174.29kB total
+Dropped 150 nodes (cum <= 35.87kB)
+      flat  flat%   sum%        cum   cum%
+-2186.64kB 30.48% 30.48% -2186.64kB 30.48%  net/textproto.readMIMEHeader
+  624.75kB  8.71% 21.77%   624.75kB  8.71%  internal/stringslite.Clone (inline)
+         0     0% 21.77%   625.12kB  8.71%  github.com/go-chi/chi/v5.(*Mux).ServeHTTP
+         0     0% 21.77%   627.91kB  8.75%  github.com/superserj/shortener/internal/auth.(*Authenticator).Middleware-fm.(*Authenticator).Middleware.func1
+         0     0% 21.77%   624.75kB  8.71%  github.com/superserj/shortener/internal/auth.(*Authenticator).Verify
+```
+
+Дифф показывает ровно цену размена: копии `userID` стоят 625 КБ, освобождённые
+заголовки дают 2187 КБ. Итог — минус 1562 КБ, или 21.8% удерживаемой памяти.
+
+Профилировщик слушает только `localhost:6060` и в публичный роутер сервиса не
+подключён: heap-профиль содержит данные пользователей и наружу отдаваться не должен.

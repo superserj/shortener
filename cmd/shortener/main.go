@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os/signal"
 	"syscall"
 	"time"
@@ -22,7 +23,13 @@ import (
 	"github.com/superserj/shortener/internal/storage"
 )
 
-const shutdownTimeout = 5 * time.Second
+const (
+	shutdownTimeout = 5 * time.Second
+	// хэндлеры pprof регистрирует в DefaultServeMux, поэтому держим их на
+	// отдельном сервере и только на локальном интерфейсе: наружу профили
+	// с содержимым кучи отдавать нельзя
+	pprofAddr = "localhost:6060"
+)
 
 func newRouter(h *handler.Handler, a *auth.Authenticator) chi.Router {
 	r := chi.NewRouter()
@@ -87,6 +94,13 @@ func main() {
 		logger.Log.Info("starting server", zap.String("addr", cfg.ServerAddr))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Log.Fatal("listen and serve", zap.Error(err))
+		}
+	}()
+
+	go func() {
+		logger.Log.Info("starting pprof server", zap.String("addr", pprofAddr))
+		if err := http.ListenAndServe(pprofAddr, nil); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Log.Error("pprof listen and serve", zap.Error(err))
 		}
 	}()
 

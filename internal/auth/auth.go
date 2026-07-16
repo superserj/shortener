@@ -39,20 +39,22 @@ func (a *Authenticator) Sign(userID string) string {
 }
 
 func (a *Authenticator) Verify(value string) (string, error) {
-	parts := strings.SplitN(value, ":", 2)
-	if len(parts) != 2 || parts[0] == "" {
+	userID, signature, ok := strings.Cut(value, ":")
+	if !ok || userID == "" {
 		return "", errors.New("invalid cookie format")
 	}
-	got, err := hex.DecodeString(parts[1])
+	got, err := hex.DecodeString(signature)
 	if err != nil {
 		return "", errors.New("invalid cookie signature encoding")
 	}
 	mac := hmac.New(sha256.New, a.secret)
-	mac.Write([]byte(parts[0]))
+	mac.Write([]byte(userID))
 	if !hmac.Equal(got, mac.Sum(nil)) {
 		return "", errors.New("signature mismatch")
 	}
-	return parts[0], nil
+	// Cut вернул подстроку заголовка запроса, а userID переживает запрос
+	// в хранилище — без копии каждая запись удерживала бы заголовок целиком.
+	return strings.Clone(userID), nil
 }
 
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
