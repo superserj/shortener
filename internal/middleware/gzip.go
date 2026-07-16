@@ -1,3 +1,4 @@
+// Пакет middleware содержит промежуточные обработчики HTTP-запросов.
 package middleware
 
 import (
@@ -79,6 +80,9 @@ func (c *compressReader) Close() error {
 	return c.zr.Close()
 }
 
+// Gzip распаковывает тело запроса, пришедшее с Content-Encoding: gzip.
+// Ответ сжимает, только если клиент прислал Accept-Encoding: gzip, статус ответа
+// меньше 300, а его Content-Type — application/json или text/html.
 func Gzip(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ow := w

@@ -1,3 +1,6 @@
+// Пакет audit рассылает события об обработанных запросах по приёмникам аудита.
+// Реализует паттерн «Наблюдатель»: издателем выступает Auditor, подписчиками —
+// приёмники, реализующие интерфейс Sink.
 package audit
 
 import (
@@ -10,11 +13,15 @@ import (
 	"github.com/superserj/shortener/internal/logger"
 )
 
+// Action — действие, которое зафиксировало событие аудита.
 type Action string
 
+// Действия, попадающие в аудит.
 const (
+	// ActionShorten — создание сокращённой ссылки.
 	ActionShorten Action = "shorten"
-	ActionFollow  Action = "follow"
+	// ActionFollow — переход по сокращённой ссылке.
+	ActionFollow Action = "follow"
 )
 
 const (
@@ -23,13 +30,19 @@ const (
 	drainTimeout = 5 * time.Second
 )
 
+// Event — событие аудита одного обработанного запроса.
 type Event struct {
-	TS     int64  `json:"ts"`
+	// TS — время события в формате unix timestamp.
+	TS int64 `json:"ts"`
+	// Action — что произошло: создание ссылки или переход по ней.
 	Action Action `json:"action"`
+	// UserID — идентификатор пользователя, если он известен.
 	UserID string `json:"user_id,omitempty"`
-	URL    string `json:"url"`
+	// URL — оригинальный, не сокращённый адрес.
+	URL string `json:"url"`
 }
 
+// NewEvent собирает событие с текущей меткой времени.
 func NewEvent(action Action, userID, url string) Event {
 	return Event{
 		TS:     time.Now().Unix(),
@@ -39,11 +52,16 @@ func NewEvent(action Action, userID, url string) Event {
 	}
 }
 
+// Sink — приёмник событий аудита, подписчик в терминах паттерна «Наблюдатель».
 type Sink interface {
+	// Send отправляет одно событие в приёмник.
 	Send(ctx context.Context, e Event) error
+	// Close освобождает ресурсы приёмника.
 	Close() error
 }
 
+// Auditor рассылает события всем зарегистрированным приёмникам.
+// Нулевое значение не готово к работе, используйте New.
 type Auditor struct {
 	mu     sync.Mutex
 	wg     sync.WaitGroup
@@ -52,16 +70,21 @@ type Auditor struct {
 	closed bool
 }
 
+// New создаёт аудитор без приёмников.
 func New() *Auditor {
 	return &Auditor{in: make(chan Event, queueSize)}
 }
 
+// Register подписывает приёмник на события. Пока не зарегистрирован ни один
+// приёмник, Notify не делает ничего.
 func (a *Auditor) Register(s Sink) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sinks = append(a.sinks, s)
 }
 
+// Notify публикует событие и сразу возвращает управление.
+//
 // Аудит не должен задерживать ответ, поэтому при переполнении очереди
 // событие отбрасывается. Счётчик wg не даёт shutdown закрыть канал,
 // пока не отработают уже принятые Notify.
@@ -82,6 +105,10 @@ func (a *Auditor) Notify(e Event) {
 	}
 }
 
+// Run разбирает очередь событий, пока не будет отменён контекст. По отмене
+// дорассылает принятые события и закрывает приёмники, но не дольше drainTimeout:
+// остаток очереди отбрасывается с предупреждением в лог, чтобы неотвечающий
+// приёмник не задерживал остановку сервиса.
 func (a *Auditor) Run(ctx context.Context) {
 	for {
 		select {

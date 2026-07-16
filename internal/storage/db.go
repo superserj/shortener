@@ -17,10 +17,13 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// DBStorage хранит ссылки в PostgreSQL. Схема разворачивается миграциями
+// при создании хранилища.
 type DBStorage struct {
 	pool *pgxpool.Pool
 }
 
+// NewDBStorage открывает пул соединений и накатывает миграции.
 func NewDBStorage(ctx context.Context, dsn string) (*DBStorage, error) {
 	if err := migrate(dsn); err != nil {
 		return nil, err
@@ -47,15 +50,18 @@ func migrate(dsn string) error {
 	return goose.Up(db, "migrations")
 }
 
+// Close закрывает пул соединений.
 func (s *DBStorage) Close() error {
 	s.pool.Close()
 	return nil
 }
 
+// Ping проверяет соединение с базой данных.
 func (s *DBStorage) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
 }
 
+// Save сохраняет ссылку. Если адрес уже сокращали, возвращает ConflictError.
 func (s *DBStorage) Save(ctx context.Context, id, url, userID string) error {
 	var stored string
 	err := s.pool.QueryRow(ctx,
@@ -77,6 +83,7 @@ func (s *DBStorage) Save(ctx context.Context, id, url, userID string) error {
 	return &ConflictError{ShortURL: stored}
 }
 
+// SaveBatch сохраняет пачку ссылок одной транзакцией.
 func (s *DBStorage) SaveBatch(ctx context.Context, items []BatchItem, userID string) error {
 	if len(items) == 0 {
 		return nil
@@ -97,6 +104,8 @@ func (s *DBStorage) SaveBatch(ctx context.Context, items []BatchItem, userID str
 	return err
 }
 
+// Get возвращает оригинальный адрес по короткой ссылке. Для удалённой ссылки
+// возвращает ErrDeleted, для неизвестной — ErrNotFound.
 func (s *DBStorage) Get(ctx context.Context, id string) (string, error) {
 	var (
 		original  string
@@ -117,6 +126,7 @@ func (s *DBStorage) Get(ctx context.Context, id string) (string, error) {
 	return original, nil
 }
 
+// ListByUser возвращает ссылки пользователя, кроме удалённых.
 func (s *DBStorage) ListByUser(ctx context.Context, userID string) ([]UserURL, error) {
 	if userID == "" {
 		return nil, nil
@@ -142,6 +152,7 @@ func (s *DBStorage) ListByUser(ctx context.Context, userID string) ([]UserURL, e
 	return result, nil
 }
 
+// MarkDeleted помечает удалёнными ссылки, принадлежащие пользователю.
 func (s *DBStorage) MarkDeleted(ctx context.Context, userID string, ids []string) error {
 	if userID == "" || len(ids) == 0 {
 		return nil

@@ -1,3 +1,4 @@
+// Пакет deleter удаляет ссылки пользователей в фоне, накапливая их в батчи.
 package deleter
 
 import (
@@ -21,6 +22,7 @@ type item struct {
 	id     string
 }
 
+// Worker собирает ссылки на удаление и применяет их пачками.
 type Worker struct {
 	in     chan item
 	sem    chan struct{}
@@ -32,6 +34,7 @@ type Worker struct {
 	closed bool
 }
 
+// New создаёт воркер удаления поверх указанного хранилища.
 func New(store storage.Repository) *Worker {
 	return &Worker{
 		in:     make(chan item, 1),
@@ -41,6 +44,7 @@ func New(store storage.Repository) *Worker {
 	}
 }
 
+// Enqueue ставит ссылки пользователя в очередь на удаление, не дожидаясь его.
 func (w *Worker) Enqueue(userID string, ids []string) {
 	if userID == "" || len(ids) == 0 {
 		return
@@ -64,6 +68,7 @@ func (w *Worker) Enqueue(userID string, ids []string) {
 	}()
 }
 
+// Run обрабатывает очередь до отмены контекста, после чего дочищает остаток.
 func (w *Worker) Run(ctx context.Context) {
 	ticker := time.NewTicker(w.period)
 	defer ticker.Stop()

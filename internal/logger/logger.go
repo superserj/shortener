@@ -1,3 +1,4 @@
+// Пакет logger даёт общий логгер сервиса и middleware логирования запросов.
 package logger
 
 import (
@@ -7,8 +8,10 @@ import (
 	"go.uber.org/zap"
 )
 
+// Log — общий логгер сервиса. До вызова Initialize ничего не пишет.
 var Log *zap.Logger = zap.NewNop()
 
+// Initialize настраивает Log на указанный уровень логирования.
 func Initialize(level string) error {
 	lvl, err := zap.ParseAtomicLevel(level)
 	if err != nil {
@@ -48,6 +51,7 @@ func (w *loggingResponseWriter) WriteHeader(statusCode int) {
 	w.data.status = statusCode
 }
 
+// WithLogging логирует метод, URI, статус, размер ответа и длительность запроса.
 func WithLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()

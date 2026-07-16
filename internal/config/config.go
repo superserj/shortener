@@ -1,3 +1,5 @@
+// Пакет config собирает настройки сервиса из флагов и переменных окружения.
+// Переменная окружения имеет приоритет над флагом.
 package config
 
 import (
@@ -5,6 +7,7 @@ import (
 	"os"
 )
 
+// Config — настройки сервиса.
 type Config struct {
 	ServerAddr      string
 	BaseURL         string
@@ -16,6 +19,7 @@ type Config struct {
 	AuditURL        string
 }
 
+// New разбирает флаги и переменные окружения и возвращает настройки.
 func New() *Config {
 	cfg := &Config{}
 

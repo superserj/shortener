@@ -1,3 +1,4 @@
+// Пакет handler содержит HTTP-обработчики сервиса сокращения ссылок.
 package handler
 
 import (
@@ -28,18 +29,22 @@ var (
 	rng   = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
 
+// DeleteEnqueuer принимает короткие ссылки на асинхронное удаление.
 type DeleteEnqueuer interface {
 	Enqueue(userID string, ids []string)
 }
 
+// Pinger проверяет доступность хранилища.
 type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
+// AuditNotifier принимает события аудита обработанных запросов.
 type AuditNotifier interface {
 	Notify(e audit.Event)
 }
 
+// Handler обслуживает эндпоинты сервиса.
 type Handler struct {
 	store   storage.Repository
 	baseURL string
@@ -48,6 +53,8 @@ type Handler struct {
 	auditor AuditNotifier
 }
 
+// New создаёт обработчик. Аргументы pinger и auditor могут быть nil: тогда
+// эндпоинт проверки БД отвечает ошибкой, а аудит не ведётся.
 func New(store storage.Repository, baseURL string, pinger Pinger, deleter DeleteEnqueuer, auditor AuditNotifier) *Handler {
 	return &Handler{
 		store:   store,
@@ -58,6 +65,9 @@ func New(store storage.Repository, baseURL string, pinger Pinger, deleter Delete
 	}
 }
 
+// ShortenURL обслуживает POST / — принимает оригинальный адрес текстом и
+// возвращает короткую ссылку. Отвечает 201, а если адрес уже сокращали — 409
+// с ранее выданной ссылкой.
 func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil || len(body) == 0 {
@@ -93,6 +103,8 @@ func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(h.baseURL + "/" + id))
 }
 
+// ShortenAPI обслуживает POST /api/shorten — то же, что ShortenURL, но принимает
+// и возвращает JSON.
 func (h *Handler) ShortenAPI(w http.ResponseWriter, r *http.Request) {
 	var req models.ShortenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -128,6 +140,8 @@ func (h *Handler) ShortenAPI(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(models.ShortenResponse{Result: h.baseURL + "/" + id})
 }
 
+// ShortenBatch обслуживает POST /api/shorten/batch — сокращает пачку адресов
+// за один запрос, сохраняя соответствие по correlation_id.
 func (h *Handler) ShortenBatch(w http.ResponseWriter, r *http.Request) {
 	var req []models.ShortenBatchRequestItem
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -168,6 +182,7 @@ func (h *Handler) ShortenBatch(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// Ping обслуживает GET /ping — проверяет соединение с базой данных.
 func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	if h.pinger == nil {
 		logger.Log.Info("ping: database not configured")
@@ -187,6 +202,8 @@ func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// Redirect обслуживает GET /{id} — отправляет на оригинальный адрес ответом 307.
+// Для удалённой ссылки отвечает 410, для неизвестной — 404.
 func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
@@ -214,6 +231,8 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
 }
 
+// UserURLs обслуживает GET /api/user/urls — отдаёт ссылки текущего пользователя.
+// Если их нет, отвечает 204.
 func (h *Handler) UserURLs(w http.ResponseWriter, r *http.Request) {
 	if auth.CookieInvalidFromContext(r.Context()) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -249,6 +268,8 @@ func (h *Handler) UserURLs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// DeleteUserURLs обслуживает DELETE /api/user/urls — принимает ссылки на
+// удаление и сразу отвечает 202, удаляя их в фоне.
 func (h *Handler) DeleteUserURLs(w http.ResponseWriter, r *http.Request) {
 	userID, ok := auth.UserIDFromContext(r.Context())
 	if !ok {

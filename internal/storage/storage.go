@@ -1,3 +1,5 @@
+// Пакет storage хранит соответствие коротких ссылок оригинальным адресам.
+// Доступны три реализации Repository: в памяти, в файле и в PostgreSQL.
 package storage
 
 import (
@@ -6,34 +8,49 @@ import (
 	"sync"
 )
 
+// Ошибки, по которым обработчики различают состояние ссылки.
 var (
+	// ErrNotFound возвращается, если короткой ссылки нет в хранилище.
 	ErrNotFound = errors.New("not found")
-	ErrDeleted  = errors.New("deleted")
+	// ErrDeleted возвращается, если ссылка была удалена владельцем.
+	ErrDeleted = errors.New("deleted")
 )
 
+// ConflictError сообщает, что оригинальный адрес уже сокращали, и несёт
+// выданную ранее короткую ссылку.
 type ConflictError struct {
 	ShortURL string
 }
 
+// Error реализует интерфейс error.
 func (e *ConflictError) Error() string {
 	return "url already shortened: " + e.ShortURL
 }
 
+// BatchItem — одна пара «короткая ссылка — адрес» для пакетного сохранения.
 type BatchItem struct {
 	ID  string
 	URL string
 }
 
+// UserURL — ссылка, созданная пользователем.
 type UserURL struct {
 	ShortURL    string
 	OriginalURL string
 }
 
+// Repository — хранилище коротких ссылок.
 type Repository interface {
+	// Save сохраняет ссылку. Если адрес уже сокращали, возвращает ConflictError.
 	Save(ctx context.Context, id, url, userID string) error
+	// SaveBatch сохраняет пачку ссылок за одну операцию. Адреса, которые уже
+	// сокращали, пропускает, не возвращая ошибки.
 	SaveBatch(ctx context.Context, items []BatchItem, userID string) error
+	// Get возвращает оригинальный адрес по короткой ссылке.
 	Get(ctx context.Context, id string) (string, error)
+	// ListByUser возвращает ссылки пользователя, кроме удалённых.
 	ListByUser(ctx context.Context, userID string) ([]UserURL, error)
+	// MarkDeleted помечает ссылки пользователя удалёнными.
 	MarkDeleted(ctx context.Context, userID string, ids []string) error
 }
 
@@ -43,17 +60,20 @@ type record struct {
 	deleted bool
 }
 
+// MemStorage хранит ссылки в памяти процесса и теряет их при перезапуске.
 type MemStorage struct {
 	mu   sync.RWMutex
 	urls map[string]record
 }
 
+// NewMemStorage создаёт пустое хранилище в памяти.
 func NewMemStorage() *MemStorage {
 	return &MemStorage{
 		urls: make(map[string]record),
 	}
 }
 
+// Save сохраняет ссылку в памяти.
 func (s *MemStorage) Save(_ context.Context, id, url, userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -73,12 +93,14 @@ func (s *MemStorage) findByURL(url string) (string, bool) {
 	return "", false
 }
 
+// Find ищет короткую ссылку по оригинальному адресу.
 func (s *MemStorage) Find(url string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.findByURL(url)
 }
 
+// SaveBatch сохраняет пачку ссылок, пропуская уже известные адреса.
 func (s *MemStorage) SaveBatch(_ context.Context, items []BatchItem, userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -91,6 +113,8 @@ func (s *MemStorage) SaveBatch(_ context.Context, items []BatchItem, userID stri
 	return nil
 }
 
+// Get возвращает оригинальный адрес по короткой ссылке. Для удалённой ссылки
+// возвращает ErrDeleted, для неизвестной — ErrNotFound.
 func (s *MemStorage) Get(_ context.Context, id string) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -104,6 +128,7 @@ func (s *MemStorage) Get(_ context.Context, id string) (string, error) {
 	return rec.url, nil
 }
 
+// ListByUser возвращает ссылки пользователя, кроме удалённых.
 func (s *MemStorage) ListByUser(_ context.Context, userID string) ([]UserURL, error) {
 	if userID == "" {
 		return nil, nil
@@ -131,6 +156,8 @@ func (s *MemStorage) ListByUser(_ context.Context, userID string) ([]UserURL, er
 	return result, nil
 }
 
+// MarkDeleted помечает удалёнными ссылки, принадлежащие пользователю. Чужие
+// ссылки пропускает.
 func (s *MemStorage) MarkDeleted(_ context.Context, userID string, ids []string) error {
 	if userID == "" || len(ids) == 0 {
 		return nil

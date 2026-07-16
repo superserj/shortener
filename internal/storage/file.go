@@ -15,6 +15,7 @@ import (
 	"github.com/superserj/shortener/internal/logger"
 )
 
+// Record — запись файлового хранилища, одна строка JSON в логе.
 type Record struct {
 	UUID        string `json:"uuid"`
 	ShortURL    string `json:"short_url"`
@@ -23,6 +24,7 @@ type Record struct {
 	IsDeleted   bool   `json:"is_deleted,omitempty"`
 }
 
+// FileStorage дописывает записи в файл и держит их копию в памяти.
 type FileStorage struct {
 	mu      sync.Mutex
 	mem     *MemStorage
@@ -31,6 +33,7 @@ type FileStorage struct {
 	nextID  int
 }
 
+// NewFileStorage открывает файл хранилища, вычитывая уже сохранённые записи.
 func NewFileStorage(path string) (*FileStorage, error) {
 	mem := NewMemStorage()
 
@@ -82,6 +85,7 @@ func loadRecords(path string, mem *MemStorage) (int, error) {
 	return nextID, nil
 }
 
+// Save сохраняет ссылку в память и дописывает её в файл.
 func (s *FileStorage) Save(ctx context.Context, id, url, userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -103,6 +107,7 @@ func (s *FileStorage) Save(ctx context.Context, id, url, userID string) error {
 	return s.mem.Save(ctx, id, url, userID)
 }
 
+// SaveBatch сохраняет пачку ссылок одной записью в файл.
 func (s *FileStorage) SaveBatch(ctx context.Context, items []BatchItem, userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -129,14 +134,17 @@ func (s *FileStorage) SaveBatch(ctx context.Context, items []BatchItem, userID s
 	return s.mem.SaveBatch(ctx, items, userID)
 }
 
+// Get возвращает оригинальный адрес по короткой ссылке.
 func (s *FileStorage) Get(ctx context.Context, id string) (string, error) {
 	return s.mem.Get(ctx, id)
 }
 
+// ListByUser возвращает ссылки пользователя.
 func (s *FileStorage) ListByUser(ctx context.Context, userID string) ([]UserURL, error) {
 	return s.mem.ListByUser(ctx, userID)
 }
 
+// MarkDeleted помечает ссылки удалёнными и фиксирует это в файле.
 func (s *FileStorage) MarkDeleted(ctx context.Context, userID string, ids []string) error {
 	if userID == "" || len(ids) == 0 {
 		return nil
@@ -159,6 +167,7 @@ func (s *FileStorage) MarkDeleted(ctx context.Context, userID string, ids []stri
 	return s.mem.MarkDeleted(ctx, userID, ids)
 }
 
+// Close закрывает файл хранилища.
 func (s *FileStorage) Close() error {
 	return s.file.Close()
 }

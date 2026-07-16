@@ -1,3 +1,4 @@
+// Пакет auth опознаёт пользователя по куке, подписанной HMAC-SHA256.
 package auth
 
 import (
@@ -24,20 +25,25 @@ const (
 	ctxCookieInvalid
 )
 
+// Authenticator выдаёт и проверяет подписанные куки с идентификатором пользователя.
 type Authenticator struct {
 	secret []byte
 }
 
+// New создаёт аутентификатор с указанным секретом подписи.
 func New(secret string) *Authenticator {
 	return &Authenticator{secret: []byte(secret)}
 }
 
+// Sign возвращает значение куки: идентификатор пользователя и его подпись
+// через двоеточие.
 func (a *Authenticator) Sign(userID string) string {
 	mac := hmac.New(sha256.New, a.secret)
 	mac.Write([]byte(userID))
 	return userID + ":" + hex.EncodeToString(mac.Sum(nil))
 }
 
+// Verify проверяет подпись куки и возвращает идентификатор пользователя.
 func (a *Authenticator) Verify(value string) (string, error) {
 	userID, signature, ok := strings.Cut(value, ":")
 	if !ok || userID == "" {
@@ -57,6 +63,9 @@ func (a *Authenticator) Verify(value string) (string, error) {
 	return strings.Clone(userID), nil
 }
 
+// Middleware кладёт идентификатор пользователя в контекст запроса. Запросу без
+// куки выдаёт новую, испорченную куку помечает признаком, который можно получить
+// через CookieInvalidFromContext.
 func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -85,10 +94,12 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+// WithUserID возвращает контекст с идентификатором пользователя.
 func WithUserID(ctx context.Context, userID string) context.Context {
 	return context.WithValue(ctx, ctxUserID, userID)
 }
 
+// WithCookieInvalid возвращает контекст с пометкой о непройденной проверке куки.
 func WithCookieInvalid(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxCookieInvalid, true)
 }
@@ -111,11 +122,13 @@ func newUserID() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
+// UserIDFromContext достаёт идентификатор пользователя из контекста.
 func UserIDFromContext(ctx context.Context) (string, bool) {
 	v, ok := ctx.Value(ctxUserID).(string)
 	return v, ok && v != ""
 }
 
+// CookieInvalidFromContext сообщает, не прошла ли кука запроса проверку подписи.
 func CookieInvalidFromContext(ctx context.Context) bool {
 	v, _ := ctx.Value(ctxCookieInvalid).(bool)
 	return v
