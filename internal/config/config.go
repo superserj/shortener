@@ -12,6 +12,8 @@ type Config struct {
 	FileStoragePath string
 	DatabaseDSN     string
 	AuthSecret      string
+	AuditFile       string
+	AuditURL        string
 }
 
 func New() *Config {
@@ -23,6 +25,8 @@ func New() *Config {
 	flag.StringVar(&cfg.FileStoragePath, "f", "/tmp/short-url-db.json", "path to file storage")
 	flag.StringVar(&cfg.DatabaseDSN, "d", "", "postgres DSN")
 	flag.StringVar(&cfg.AuthSecret, "s", "shortener-default-secret", "secret key for auth cookie signature")
+	flag.StringVar(&cfg.AuditFile, "audit-file", "", "path to audit log file, empty disables file audit")
+	flag.StringVar(&cfg.AuditURL, "audit-url", "", "url of remote audit sink, empty disables remote audit")
 
 	flag.Parse()
 
@@ -43,6 +47,12 @@ func New() *Config {
 	}
 	if v, ok := os.LookupEnv("AUTH_SECRET"); ok {
 		cfg.AuthSecret = v
+	}
+	if v, ok := os.LookupEnv("AUDIT_FILE"); ok {
+		cfg.AuditFile = v
+	}
+	if v, ok := os.LookupEnv("AUDIT_URL"); ok {
+		cfg.AuditURL = v
 	}
 
 	return cfg

@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
+	"github.com/superserj/shortener/internal/audit"
 	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/config"
 	"github.com/superserj/shortener/internal/deleter"
@@ -20,6 +21,8 @@ import (
 	"github.com/superserj/shortener/internal/middleware"
 	"github.com/superserj/shortener/internal/storage"
 )
+
+const shutdownTimeout = 5 * time.Second
 
 func newRouter(h *handler.Handler, a *auth.Authenticator) chi.Router {
 	r := chi.NewRouter()
@@ -64,7 +67,18 @@ func main() {
 		close(delDone)
 	}()
 
-	h := handler.New(store, cfg.BaseURL, pinger, del)
+	aud, err := newAuditor(cfg)
+	if err != nil {
+		logger.Log.Fatal("init audit", zap.Error(err))
+	}
+	auditCtx, auditCancel := context.WithCancel(context.Background())
+	auditDone := make(chan struct{})
+	go func() {
+		aud.Run(auditCtx)
+		close(auditDone)
+	}()
+
+	h := handler.New(store, cfg.BaseURL, pinger, del, aud)
 	a := auth.New(cfg.AuthSecret)
 
 	srv := &http.Server{Addr: cfg.ServerAddr, Handler: newRouter(h, a)}
@@ -80,7 +94,7 @@ func main() {
 	defer stop()
 	<-ctx.Done()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Log.Error("server shutdown", zap.Error(err))
@@ -88,6 +102,26 @@ func main() {
 
 	delCancel()
 	<-delDone
+
+	auditCancel()
+	<-auditDone
+}
+
+func newAuditor(cfg *config.Config) (*audit.Auditor, error) {
+	aud := audit.New()
+
+	if cfg.AuditFile != "" {
+		sink, err := audit.NewFileSink(cfg.AuditFile)
+		if err != nil {
+			return nil, err
+		}
+		aud.Register(sink)
+	}
+	if cfg.AuditURL != "" {
+		aud.Register(audit.NewHTTPSink(cfg.AuditURL))
+	}
+
+	return aud, nil
 }
 
 func newStore(ctx context.Context, dsn, path string) (storage.Repository, error) {

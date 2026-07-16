@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/superserj/shortener/internal/audit"
 	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/logger"
 	"github.com/superserj/shortener/internal/models"
@@ -39,6 +40,14 @@ func (r *recordDeleter) Enqueue(userID string, ids []string) {
 	r.ids = append(r.ids, ids...)
 }
 
+type recordAuditor struct {
+	events []audit.Event
+}
+
+func (r *recordAuditor) Notify(e audit.Event) {
+	r.events = append(r.events, e)
+}
+
 func setupRouter(h *Handler) chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.ShortenURL)
@@ -48,7 +57,7 @@ func setupRouter(h *Handler) chi.Router {
 
 func TestShortenURL(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil, noopDeleter{})
+	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil)
 
 	tests := []struct {
 		name       string
@@ -91,7 +100,7 @@ func TestShortenURL(t *testing.T) {
 
 func TestShortenURLConflict(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil, noopDeleter{})
+	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil)
 
 	const url = "https://practicum.yandex.ru/"
 
@@ -112,7 +121,7 @@ func TestShortenURLConflict(t *testing.T) {
 
 func TestShortenAPI(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil, noopDeleter{})
+	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil)
 
 	tests := []struct {
 		name       string
@@ -160,7 +169,7 @@ func TestShortenAPI(t *testing.T) {
 
 func TestShortenBatch(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil, noopDeleter{})
+	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil)
 
 	tests := []struct {
 		name       string
@@ -223,7 +232,7 @@ func TestUserURLs(t *testing.T) {
 	require.NoError(t, store.Save(ctx, "cd2", "https://example.com/", userID))
 	require.NoError(t, store.Save(ctx, "zz9", "https://other.example.com/", "another-user"))
 
-	h := New(store, "http://localhost:8080", nil, noopDeleter{})
+	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil)
 
 	t.Run("returns urls for current user", func(t *testing.T) {
 		r := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil).WithContext(ctx)
@@ -269,7 +278,7 @@ func TestDeleteUserURLs(t *testing.T) {
 
 	t.Run("accepts ids and enqueues for user", func(t *testing.T) {
 		rec := &recordDeleter{}
-		h := New(store, "http://localhost:8080", nil, rec)
+		h := New(store, "http://localhost:8080", nil, rec, nil)
 
 		body := strings.NewReader(`["a","b","c"]`)
 		r := httptest.NewRequest(http.MethodDelete, "/api/user/urls", body).
@@ -283,7 +292,7 @@ func TestDeleteUserURLs(t *testing.T) {
 	})
 
 	t.Run("rejects without user", func(t *testing.T) {
-		h := New(store, "http://localhost:8080", nil, noopDeleter{})
+		h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil)
 
 		body := strings.NewReader(`["a"]`)
 		r := httptest.NewRequest(http.MethodDelete, "/api/user/urls", body)
@@ -294,7 +303,7 @@ func TestDeleteUserURLs(t *testing.T) {
 	})
 
 	t.Run("rejects invalid json", func(t *testing.T) {
-		h := New(store, "http://localhost:8080", nil, noopDeleter{})
+		h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil)
 
 		body := strings.NewReader(`not-json`)
 		r := httptest.NewRequest(http.MethodDelete, "/api/user/urls", body).
@@ -307,7 +316,7 @@ func TestDeleteUserURLs(t *testing.T) {
 }
 
 func TestPingWithoutDB(t *testing.T) {
-	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{})
+	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{}, nil)
 
 	r := httptest.NewRequest(http.MethodGet, "/ping", nil)
 	w := httptest.NewRecorder()
@@ -323,7 +332,7 @@ func TestPingWithoutDB(t *testing.T) {
 func TestRedirect(t *testing.T) {
 	store := storage.NewMemStorage()
 	require.NoError(t, store.Save(context.Background(), "testid", "https://practicum.yandex.ru/", ""))
-	h := New(store, "http://localhost:8080", nil, noopDeleter{})
+	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil)
 
 	require.NoError(t, store.Save(context.Background(), "deletedid", "https://gone.example.com/", "owner"))
 	require.NoError(t, store.MarkDeleted(context.Background(), "owner", []string{"deletedid"}))
@@ -374,4 +383,102 @@ func TestRedirect(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAuditOnShorten(t *testing.T) {
+	rec := &recordAuditor{}
+	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{}, rec)
+
+	const url = "https://practicum.yandex.ru/"
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(url))
+	r = r.WithContext(auth.WithUserID(r.Context(), "user-42"))
+	w := httptest.NewRecorder()
+
+	h.ShortenURL(w, r)
+	require.Equal(t, http.StatusCreated, w.Result().StatusCode)
+
+	require.Len(t, rec.events, 1)
+	assert.Equal(t, audit.ActionShorten, rec.events[0].Action)
+	assert.Equal(t, url, rec.events[0].URL)
+	assert.Equal(t, "user-42", rec.events[0].UserID)
+	assert.NotZero(t, rec.events[0].TS)
+}
+
+func TestAuditOnShortenAPI(t *testing.T) {
+	rec := &recordAuditor{}
+	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{}, rec)
+
+	body := `{"url":"https://practicum.yandex.ru/"}`
+	w := httptest.NewRecorder()
+	h.ShortenAPI(w, httptest.NewRequest(http.MethodPost, "/api/shorten", strings.NewReader(body)))
+	require.Equal(t, http.StatusCreated, w.Result().StatusCode)
+
+	require.Len(t, rec.events, 1)
+	assert.Equal(t, audit.ActionShorten, rec.events[0].Action)
+	assert.Equal(t, "https://practicum.yandex.ru/", rec.events[0].URL)
+}
+
+func TestAuditOnRedirect(t *testing.T) {
+	store := storage.NewMemStorage()
+	require.NoError(t, store.Save(context.Background(), "testid", "https://practicum.yandex.ru/", ""))
+
+	rec := &recordAuditor{}
+	h := New(store, "http://localhost:8080", nil, noopDeleter{}, rec)
+
+	r := httptest.NewRequest(http.MethodGet, "/testid", nil)
+	ctx := chi.NewRouteContext()
+	ctx.URLParams.Add("id", "testid")
+	r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, ctx))
+	w := httptest.NewRecorder()
+
+	h.Redirect(w, r)
+	require.Equal(t, http.StatusTemporaryRedirect, w.Result().StatusCode)
+
+	require.Len(t, rec.events, 1)
+	assert.Equal(t, audit.ActionFollow, rec.events[0].Action)
+	assert.Equal(t, "https://practicum.yandex.ru/", rec.events[0].URL, "в аудит идёт оригинальный, а не сокращённый url")
+}
+
+func TestAuditOnShortenConflict(t *testing.T) {
+	rec := &recordAuditor{}
+	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{}, rec)
+
+	const url = "https://practicum.yandex.ru/"
+	h.ShortenURL(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(url)))
+
+	second := httptest.NewRecorder()
+	h.ShortenURL(second, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(url)))
+	require.Equal(t, http.StatusConflict, second.Result().StatusCode)
+
+	require.Len(t, rec.events, 2, "конфликт тоже успешно обслужен и попадает в аудит")
+	assert.Equal(t, audit.ActionShorten, rec.events[1].Action)
+	assert.Equal(t, url, rec.events[1].URL)
+}
+
+func TestNoAuditOnFailedRequests(t *testing.T) {
+	store := storage.NewMemStorage()
+	rec := &recordAuditor{}
+	h := New(store, "http://localhost:8080", nil, noopDeleter{}, rec)
+
+	h.ShortenURL(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader("")))
+
+	missing := httptest.NewRequest(http.MethodGet, "/nosuchid", nil)
+	ctx := chi.NewRouteContext()
+	ctx.URLParams.Add("id", "nosuchid")
+	missing = missing.WithContext(context.WithValue(missing.Context(), chi.RouteCtxKey, ctx))
+	h.Redirect(httptest.NewRecorder(), missing)
+
+	assert.Empty(t, rec.events, "неуспешные запросы в аудит не попадают")
+}
+
+func TestNoAuditOnBatch(t *testing.T) {
+	rec := &recordAuditor{}
+	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{}, rec)
+
+	body := `[{"correlation_id":"1","original_url":"https://practicum.yandex.ru/"}]`
+	w := httptest.NewRecorder()
+	h.ShortenBatch(w, httptest.NewRequest(http.MethodPost, "/api/shorten/batch", strings.NewReader(body)))
+	require.Equal(t, http.StatusCreated, w.Result().StatusCode)
+
+	assert.Empty(t, rec.events, "батч в списке аудируемых хэндлеров не значится")
 }

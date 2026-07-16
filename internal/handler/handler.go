@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
+	"github.com/superserj/shortener/internal/audit"
 	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/logger"
 	"github.com/superserj/shortener/internal/models"
@@ -35,19 +36,25 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
+type AuditNotifier interface {
+	Notify(e audit.Event)
+}
+
 type Handler struct {
 	store   storage.Repository
 	baseURL string
 	pinger  Pinger
 	deleter DeleteEnqueuer
+	auditor AuditNotifier
 }
 
-func New(store storage.Repository, baseURL string, pinger Pinger, deleter DeleteEnqueuer) *Handler {
+func New(store storage.Repository, baseURL string, pinger Pinger, deleter DeleteEnqueuer, auditor AuditNotifier) *Handler {
 	return &Handler{
 		store:   store,
 		baseURL: baseURL,
 		pinger:  pinger,
 		deleter: deleter,
+		auditor: auditor,
 	}
 }
 
@@ -78,6 +85,8 @@ func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	h.notifyAudit(r, audit.ActionShorten, originalURL)
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(status)
@@ -111,6 +120,8 @@ func (h *Handler) ShortenAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	h.notifyAudit(r, audit.ActionShorten, originalURL)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -198,6 +209,8 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.notifyAudit(r, audit.ActionFollow, originalURL)
+
 	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
 }
 
@@ -255,6 +268,14 @@ func (h *Handler) DeleteUserURLs(w http.ResponseWriter, r *http.Request) {
 
 	h.deleter.Enqueue(userID, ids)
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func (h *Handler) notifyAudit(r *http.Request, action audit.Action, originalURL string) {
+	if h.auditor == nil {
+		return
+	}
+	userID, _ := auth.UserIDFromContext(r.Context())
+	h.auditor.Notify(audit.NewEvent(action, userID, originalURL))
 }
 
 func generateID(n int) string {
