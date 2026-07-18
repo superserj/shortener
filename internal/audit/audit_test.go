@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 const (
@@ -118,7 +119,7 @@ func TestEventWithoutUserIDOmitsField(t *testing.T) {
 
 func TestAuditorNotifiesAllSinks(t *testing.T) {
 	first, second := newStubSink(), newStubSink()
-	a := New()
+	a := New(zap.NewNop())
 	a.Register(first)
 	a.Register(second)
 	runAuditor(t, a)
@@ -138,7 +139,7 @@ func TestAuditorNotifiesAllSinks(t *testing.T) {
 func TestAuditorKeepsGoingWhenSinkFails(t *testing.T) {
 	failing, healthy := newStubSink(), newStubSink()
 	failing.err = assert.AnError
-	a := New()
+	a := New(zap.NewNop())
 	a.Register(failing)
 	a.Register(healthy)
 	runAuditor(t, a)
@@ -150,12 +151,13 @@ func TestAuditorKeepsGoingWhenSinkFails(t *testing.T) {
 }
 
 func TestAuditorWithoutSinksDropsEvents(t *testing.T) {
-	a := New()
+	a := New(zap.NewNop())
 	runAuditor(t, a)
 
+	// Без приёмников нет ни воркеров, ни очередей, поэтому Notify — безопасный
+	// no-op: рассылать событие некуда.
+	require.Empty(t, a.workers, "без приёмников не должно быть воркеров")
 	a.Notify(NewEvent(ActionShorten, "u1", "https://example.com/three"))
-
-	assert.Empty(t, a.in, "событие не должно попадать в очередь без приёмников")
 }
 
 // blockingSink имитирует приёмник, который не отвечает.
@@ -175,7 +177,7 @@ func TestNotifyDoesNotBlockWhenSinkHangs(t *testing.T) {
 	const total = queueSize * 2
 
 	sink := &blockingSink{release: make(chan struct{})}
-	a := New()
+	a := New(zap.NewNop())
 	a.Register(sink)
 	runAuditor(t, a)
 	defer close(sink.release)
@@ -199,7 +201,7 @@ func TestAuditorDeliversBurstWithinQueue(t *testing.T) {
 	const total = queueSize
 
 	sink := newStubSink()
-	a := New()
+	a := New(zap.NewNop())
 	a.Register(sink)
 	runAuditor(t, a)
 
@@ -221,7 +223,7 @@ func TestAuditorDeliversEventsAcceptedBeforeShutdown(t *testing.T) {
 	const total = 64
 
 	sink := newStubSink()
-	a := New()
+	a := New(zap.NewNop())
 	a.Register(sink)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -253,7 +255,7 @@ func TestAuditorDeliversEventsAcceptedBeforeShutdown(t *testing.T) {
 
 func TestAuditorDrainsAndClosesSinksOnShutdown(t *testing.T) {
 	sink := newStubSink()
-	a := New()
+	a := New(zap.NewNop())
 	a.Register(sink)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -315,7 +317,7 @@ func TestSinksNeverGetCancelledContext(t *testing.T) {
 
 	for i := 0; i < trials; i++ {
 		sink := &ctxSink{}
-		a := New()
+		a := New(zap.NewNop())
 		a.Register(sink)
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -339,6 +341,39 @@ func TestSinksNeverGetCancelledContext(t *testing.T) {
 		live, dead := sink.liveCount()
 		require.Zero(t, dead, "приёмник не должен получать отменённый контекст")
 		require.Equal(t, events, live, "все принятые события должны дойти до приёмника")
+	}
+}
+
+// hangingSink игнорирует контекст и никогда не отвечает: имитирует зависший
+// приёмник, который не должен блокировать остановку сервиса.
+type hangingSink struct{}
+
+func (hangingSink) Send(context.Context, Event) error { select {} }
+
+func (hangingSink) Close() error { return nil }
+
+func TestShutdownBoundedWhenSinkHangs(t *testing.T) {
+	a := New(zap.NewNop())
+	a.drainTimeout = 50 * time.Millisecond
+	a.Register(hangingSink{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		a.Run(ctx)
+		close(done)
+	}()
+
+	for i := 0; i < 10; i++ {
+		a.Notify(NewEvent(ActionShorten, "u1", "https://example.com/hang"))
+	}
+	time.Sleep(10 * time.Millisecond) // дать воркеру заблокироваться на Send
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(waitTimeout):
+		t.Fatal("остановка не завершилась при зависшем приёмнике")
 	}
 }
 

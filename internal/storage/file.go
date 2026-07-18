@@ -11,8 +11,6 @@ import (
 	"sync"
 
 	"go.uber.org/zap"
-
-	"github.com/superserj/shortener/internal/logger"
 )
 
 // Record — запись файлового хранилища, одна строка JSON в логе.
@@ -31,10 +29,12 @@ type FileStorage struct {
 	file    *os.File
 	encoder *json.Encoder
 	nextID  int
+	log     *zap.Logger
 }
 
 // NewFileStorage открывает файл хранилища, вычитывая уже сохранённые записи.
-func NewFileStorage(path string) (*FileStorage, error) {
+// Логгер передаётся явно.
+func NewFileStorage(path string, log *zap.Logger) (*FileStorage, error) {
 	mem := NewMemStorage()
 
 	nextID, err := loadRecords(path, mem)
@@ -52,6 +52,7 @@ func NewFileStorage(path string) (*FileStorage, error) {
 		file:    file,
 		encoder: json.NewEncoder(file),
 		nextID:  nextID,
+		log:     log,
 	}, nil
 }
 
@@ -100,7 +101,7 @@ func (s *FileStorage) Save(ctx context.Context, id, url, userID string) error {
 		UserID:      userID,
 	}
 	if err := s.encoder.Encode(rec); err != nil {
-		logger.Log.Warn("failed to persist record", zap.Error(err))
+		s.log.Warn("failed to persist record", zap.Error(err))
 		return err
 	}
 	s.nextID++
@@ -122,12 +123,12 @@ func (s *FileStorage) SaveBatch(ctx context.Context, items []BatchItem, userID s
 			UserID:      userID,
 		}
 		if err := enc.Encode(rec); err != nil {
-			logger.Log.Warn("failed to encode batch record", zap.Error(err))
+			s.log.Warn("failed to encode batch record", zap.Error(err))
 			return err
 		}
 	}
 	if _, err := s.file.Write(buf.Bytes()); err != nil {
-		logger.Log.Warn("failed to persist batch", zap.Error(err))
+		s.log.Warn("failed to persist batch", zap.Error(err))
 		return err
 	}
 	s.nextID += len(items)
@@ -156,12 +157,12 @@ func (s *FileStorage) MarkDeleted(ctx context.Context, userID string, ids []stri
 	enc := json.NewEncoder(&buf)
 	for _, id := range ids {
 		if err := enc.Encode(&Record{ShortURL: id, UserID: userID, IsDeleted: true}); err != nil {
-			logger.Log.Warn("failed to encode delete record", zap.Error(err))
+			s.log.Warn("failed to encode delete record", zap.Error(err))
 			return err
 		}
 	}
 	if _, err := s.file.Write(buf.Bytes()); err != nil {
-		logger.Log.Warn("failed to persist delete", zap.Error(err))
+		s.log.Warn("failed to persist delete", zap.Error(err))
 		return err
 	}
 	return s.mem.MarkDeleted(ctx, userID, ids)

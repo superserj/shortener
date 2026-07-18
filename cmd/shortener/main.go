@@ -31,9 +31,9 @@ const (
 	pprofAddr = "localhost:6060"
 )
 
-func newRouter(h *handler.Handler, a *auth.Authenticator) chi.Router {
+func newRouter(h *handler.Handler, a *auth.Authenticator, log *zap.Logger) chi.Router {
 	r := chi.NewRouter()
-	r.Use(logger.WithLogging)
+	r.Use(logger.WithLogging(log))
 	r.Use(middleware.Gzip)
 	r.Use(a.Middleware)
 	r.Post("/", h.ShortenURL)
@@ -49,13 +49,15 @@ func newRouter(h *handler.Handler, a *auth.Authenticator) chi.Router {
 func main() {
 	cfg := config.New()
 
-	if err := logger.Initialize(cfg.LogLevel); err != nil {
+	lg, err := logger.New(cfg.LogLevel)
+	if err != nil {
 		log.Fatal(err)
 	}
+	defer func() { _ = lg.Sync() }()
 
-	store, err := newStore(context.Background(), cfg.DatabaseDSN, cfg.FileStoragePath)
+	store, err := newStore(context.Background(), cfg.DatabaseDSN, cfg.FileStoragePath, lg.With(zap.String("component", "storage")))
 	if err != nil {
-		logger.Log.Fatal("init storage", zap.Error(err))
+		lg.Fatal("init storage", zap.Error(err))
 	}
 	if closer, ok := store.(interface{ Close() error }); ok {
 		defer closer.Close()
@@ -67,16 +69,16 @@ func main() {
 	}
 
 	delCtx, delCancel := context.WithCancel(context.Background())
-	del := deleter.New(store)
+	del := deleter.New(store, lg.With(zap.String("component", "deleter")))
 	delDone := make(chan struct{})
 	go func() {
 		del.Run(delCtx)
 		close(delDone)
 	}()
 
-	aud, err := newAuditor(cfg)
+	aud, err := newAuditor(cfg, lg.With(zap.String("component", "audit")))
 	if err != nil {
-		logger.Log.Fatal("init audit", zap.Error(err))
+		lg.Fatal("init audit", zap.Error(err))
 	}
 	auditCtx, auditCancel := context.WithCancel(context.Background())
 	auditDone := make(chan struct{})
@@ -85,22 +87,22 @@ func main() {
 		close(auditDone)
 	}()
 
-	h := handler.New(store, cfg.BaseURL, pinger, del, aud)
+	h := handler.New(store, cfg.BaseURL, pinger, del, aud, lg.With(zap.String("component", "handler")))
 	a := auth.New(cfg.AuthSecret)
 
-	srv := &http.Server{Addr: cfg.ServerAddr, Handler: newRouter(h, a)}
+	srv := &http.Server{Addr: cfg.ServerAddr, Handler: newRouter(h, a, lg)}
 
 	go func() {
-		logger.Log.Info("starting server", zap.String("addr", cfg.ServerAddr))
+		lg.Info("starting server", zap.String("addr", cfg.ServerAddr))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Log.Fatal("listen and serve", zap.Error(err))
+			lg.Fatal("listen and serve", zap.Error(err))
 		}
 	}()
 
 	go func() {
-		logger.Log.Info("starting pprof server", zap.String("addr", pprofAddr))
+		lg.Info("starting pprof server", zap.String("addr", pprofAddr))
 		if err := http.ListenAndServe(pprofAddr, nil); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Log.Error("pprof listen and serve", zap.Error(err))
+			lg.Error("pprof listen and serve", zap.Error(err))
 		}
 	}()
 
@@ -111,7 +113,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Log.Error("server shutdown", zap.Error(err))
+		lg.Error("server shutdown", zap.Error(err))
 	}
 
 	delCancel()
@@ -121,8 +123,8 @@ func main() {
 	<-auditDone
 }
 
-func newAuditor(cfg *config.Config) (*audit.Auditor, error) {
-	aud := audit.New()
+func newAuditor(cfg *config.Config, log *zap.Logger) (*audit.Auditor, error) {
+	aud := audit.New(log)
 
 	if cfg.AuditFile != "" {
 		sink, err := audit.NewFileSink(cfg.AuditFile)
@@ -138,12 +140,12 @@ func newAuditor(cfg *config.Config) (*audit.Auditor, error) {
 	return aud, nil
 }
 
-func newStore(ctx context.Context, dsn, path string) (storage.Repository, error) {
+func newStore(ctx context.Context, dsn, path string, log *zap.Logger) (storage.Repository, error) {
 	if dsn != "" {
 		return storage.NewDBStorage(ctx, dsn)
 	}
 	if path == "" {
 		return storage.NewMemStorage(), nil
 	}
-	return storage.NewFileStorage(path)
+	return storage.NewFileStorage(path, log)
 }

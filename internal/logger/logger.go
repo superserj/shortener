@@ -8,26 +8,20 @@ import (
 	"go.uber.org/zap"
 )
 
-// Log — общий логгер сервиса. До вызова Initialize ничего не пишет.
-var Log *zap.Logger = zap.NewNop()
-
-// Initialize настраивает Log на указанный уровень логирования.
-func Initialize(level string) error {
+// New строит продакшн-логгер с указанным уровнем. Логгер передаётся компонентам
+// явно — через конструкторы, без глобального состояния: так поведение компонента
+// не зависит от скрытой инициализации, а дочерний логгер можно пометить именем
+// компонента через log.With(zap.String("component", "...")).
+func New(level string) (*zap.Logger, error) {
 	lvl, err := zap.ParseAtomicLevel(level)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	cfg := zap.NewProductionConfig()
 	cfg.Level = lvl
 
-	zl, err := cfg.Build()
-	if err != nil {
-		return err
-	}
-
-	Log = zl
-	return nil
+	return cfg.Build()
 }
 
 type responseData struct {
@@ -51,22 +45,25 @@ func (w *loggingResponseWriter) WriteHeader(statusCode int) {
 	w.data.status = statusCode
 }
 
-// WithLogging логирует метод, URI, статус, размер ответа и длительность запроса.
-func WithLogging(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
+// WithLogging возвращает middleware, логирующее метод, URI, статус, размер ответа
+// и длительность запроса через переданный логгер.
+func WithLogging(log *zap.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
 
-		data := &responseData{status: http.StatusOK}
-		lw := &loggingResponseWriter{ResponseWriter: w, data: data}
+			data := &responseData{status: http.StatusOK}
+			lw := &loggingResponseWriter{ResponseWriter: w, data: data}
 
-		next.ServeHTTP(lw, r)
+			next.ServeHTTP(lw, r)
 
-		Log.Info("request",
-			zap.String("uri", r.RequestURI),
-			zap.String("method", r.Method),
-			zap.Int("status", data.status),
-			zap.Duration("duration", time.Since(start)),
-			zap.Int("size", data.size),
-		)
-	})
+			log.Info("request",
+				zap.String("uri", r.RequestURI),
+				zap.String("method", r.Method),
+				zap.Int("status", data.status),
+				zap.Duration("duration", time.Since(start)),
+				zap.Int("size", data.size),
+			)
+		})
+	}
 }

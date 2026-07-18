@@ -8,7 +8,6 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/superserj/shortener/internal/logger"
 	"github.com/superserj/shortener/internal/storage"
 )
 
@@ -28,19 +27,21 @@ type Worker struct {
 	sem    chan struct{}
 	store  storage.Repository
 	period time.Duration
+	log    *zap.Logger
 
 	mu     sync.Mutex
 	wg     sync.WaitGroup
 	closed bool
 }
 
-// New создаёт воркер удаления поверх указанного хранилища.
-func New(store storage.Repository) *Worker {
+// New создаёт воркер удаления поверх указанного хранилища. Логгер передаётся явно.
+func New(store storage.Repository, log *zap.Logger) *Worker {
 	return &Worker{
 		in:     make(chan item, 1),
 		sem:    make(chan struct{}, maxWriters),
 		store:  store,
 		period: flushPeriod,
+		log:    log,
 	}
 }
 
@@ -108,7 +109,7 @@ func (w *Worker) shutdown(buf map[string][]string) {
 func (w *Worker) flush(ctx context.Context, buf map[string][]string) {
 	for uid, ids := range buf {
 		if err := w.store.MarkDeleted(ctx, uid, ids); err != nil {
-			logger.Log.Warn("mark deleted failed", zap.String("user", uid), zap.Error(err))
+			w.log.Warn("mark deleted failed", zap.String("user", uid), zap.Error(err))
 		}
 		delete(buf, uid)
 	}

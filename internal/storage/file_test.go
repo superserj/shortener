@@ -8,19 +8,20 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 func TestFileStoragePersistence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "urls.json")
 	ctx := context.Background()
 
-	first, err := NewFileStorage(path)
+	first, err := NewFileStorage(path, zap.NewNop())
 	require.NoError(t, err)
 	require.NoError(t, first.Save(ctx, "abc", "https://practicum.yandex.ru/", "user1"))
 	require.NoError(t, first.Save(ctx, "def", "https://example.com/", "user1"))
 	require.NoError(t, first.Close())
 
-	second, err := NewFileStorage(path)
+	second, err := NewFileStorage(path, zap.NewNop())
 	require.NoError(t, err)
 	defer second.Close()
 
@@ -37,13 +38,13 @@ func TestFileStorageDeletePersists(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "urls.json")
 	ctx := context.Background()
 
-	first, err := NewFileStorage(path)
+	first, err := NewFileStorage(path, zap.NewNop())
 	require.NoError(t, err)
 	require.NoError(t, first.Save(ctx, "abc", "https://practicum.yandex.ru/", "user1"))
 	require.NoError(t, first.MarkDeleted(ctx, "user1", []string{"abc"}))
 	require.NoError(t, first.Close())
 
-	second, err := NewFileStorage(path)
+	second, err := NewFileStorage(path, zap.NewNop())
 	require.NoError(t, err)
 	defer second.Close()
 
@@ -54,7 +55,7 @@ func TestFileStorageDeletePersists(t *testing.T) {
 func TestFileStorageEmptyFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "empty.json")
 
-	s, err := NewFileStorage(path)
+	s, err := NewFileStorage(path, zap.NewNop())
 	require.NoError(t, err)
 	defer s.Close()
 

@@ -17,7 +17,6 @@ import (
 
 	"github.com/superserj/shortener/internal/audit"
 	"github.com/superserj/shortener/internal/auth"
-	"github.com/superserj/shortener/internal/logger"
 	"github.com/superserj/shortener/internal/models"
 	"github.com/superserj/shortener/internal/storage"
 )
@@ -51,17 +50,19 @@ type Handler struct {
 	pinger  Pinger
 	deleter DeleteEnqueuer
 	auditor AuditNotifier
+	log     *zap.Logger
 }
 
-// New создаёт обработчик. Аргументы pinger и auditor могут быть nil: тогда
-// эндпоинт проверки БД отвечает ошибкой, а аудит не ведётся.
-func New(store storage.Repository, baseURL string, pinger Pinger, deleter DeleteEnqueuer, auditor AuditNotifier) *Handler {
+// New создаёт обработчик. Логгер передаётся явно. Аргументы pinger и auditor
+// могут быть nil: тогда эндпоинт проверки БД отвечает ошибкой, а аудит не ведётся.
+func New(store storage.Repository, baseURL string, pinger Pinger, deleter DeleteEnqueuer, auditor AuditNotifier, log *zap.Logger) *Handler {
 	return &Handler{
 		store:   store,
 		baseURL: baseURL,
 		pinger:  pinger,
 		deleter: deleter,
 		auditor: auditor,
+		log:     log,
 	}
 }
 
@@ -90,7 +91,7 @@ func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 			id = conflict.ShortURL
 			status = http.StatusConflict
 		} else {
-			logger.Log.Warn("save failed", zap.Error(err))
+			h.log.Warn("save failed", zap.Error(err))
 			http.Error(w, "save failed", http.StatusInternalServerError)
 			return
 		}
@@ -127,7 +128,7 @@ func (h *Handler) ShortenAPI(w http.ResponseWriter, r *http.Request) {
 			id = conflict.ShortURL
 			status = http.StatusConflict
 		} else {
-			logger.Log.Warn("save failed", zap.Error(err))
+			h.log.Warn("save failed", zap.Error(err))
 			http.Error(w, "save failed", http.StatusInternalServerError)
 			return
 		}
@@ -172,7 +173,7 @@ func (h *Handler) ShortenBatch(w http.ResponseWriter, r *http.Request) {
 
 	userID, _ := auth.UserIDFromContext(r.Context())
 	if err := h.store.SaveBatch(r.Context(), items, userID); err != nil {
-		logger.Log.Warn("save batch failed", zap.Error(err))
+		h.log.Warn("save batch failed", zap.Error(err))
 		http.Error(w, "save failed", http.StatusInternalServerError)
 		return
 	}
@@ -185,7 +186,7 @@ func (h *Handler) ShortenBatch(w http.ResponseWriter, r *http.Request) {
 // Ping обслуживает GET /ping — проверяет соединение с базой данных.
 func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	if h.pinger == nil {
-		logger.Log.Info("ping: database not configured")
+		h.log.Info("ping: database not configured")
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -194,7 +195,7 @@ func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := h.pinger.Ping(ctx); err != nil {
-		logger.Log.Info("ping failed", zap.Error(err))
+		h.log.Info("ping failed", zap.Error(err))
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -221,7 +222,7 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		logger.Log.Warn("get failed", zap.Error(err))
+		h.log.Warn("get failed", zap.Error(err))
 		http.Error(w, "get failed", http.StatusInternalServerError)
 		return
 	}
@@ -246,7 +247,7 @@ func (h *Handler) UserURLs(w http.ResponseWriter, r *http.Request) {
 
 	urls, err := h.store.ListByUser(r.Context(), userID)
 	if err != nil {
-		logger.Log.Warn("list by user failed", zap.Error(err))
+		h.log.Warn("list by user failed", zap.Error(err))
 		http.Error(w, "list failed", http.StatusInternalServerError)
 		return
 	}

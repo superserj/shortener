@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 
 	"github.com/superserj/shortener/internal/handler"
 	"github.com/superserj/shortener/internal/models"
@@ -25,7 +26,7 @@ func (noopDeleter) Enqueue(_ string, _ []string) {}
 // newServer поднимает сервис с хранилищем в памяти.
 func newServer() *httptest.Server {
 	store := storage.NewMemStorage()
-	h := handler.New(store, baseURL, nil, noopDeleter{}, nil)
+	h := handler.New(store, baseURL, nil, noopDeleter{}, nil, zap.NewNop())
 
 	r := chi.NewRouter()
 	r.Post("/", h.ShortenURL)
@@ -220,7 +221,7 @@ func ExampleNew() {
 		return
 	}
 
-	h := handler.New(store, baseURL, nil, noopDeleter{}, nil)
+	h := handler.New(store, baseURL, nil, noopDeleter{}, nil, zap.NewNop())
 
 	r := chi.NewRouter()
 	r.Get("/{id}", h.Redirect)

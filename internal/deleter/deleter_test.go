@@ -9,13 +9,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
-	"github.com/superserj/shortener/internal/logger"
 	"github.com/superserj/shortener/internal/storage"
 )
 
 func TestMain(m *testing.M) {
-	_ = logger.Initialize("error")
 	os.Exit(m.Run())
 }
 
@@ -47,7 +46,7 @@ func TestWorkerBatchesByUser(t *testing.T) {
 	require.NoError(t, store.Save(context.Background(), "def", "https://b.example/", "user-1"))
 	require.NoError(t, store.Save(context.Background(), "ghi", "https://c.example/", "user-2"))
 
-	w := New(store)
+	w := New(store, zap.NewNop())
 	w.period = 50 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -81,7 +80,7 @@ func TestWorkerFlushesOnShutdown(t *testing.T) {
 	store := newSpyStore()
 	require.NoError(t, store.Save(context.Background(), "id1", "https://a.example/", "u"))
 
-	w := New(store)
+	w := New(store, zap.NewNop())
 	w.period = time.Hour
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -102,7 +101,7 @@ func TestWorkerFlushesOnShutdown(t *testing.T) {
 }
 
 func TestEnqueueIgnoresEmpty(t *testing.T) {
-	w := New(newSpyStore())
+	w := New(newSpyStore(), zap.NewNop())
 	w.Enqueue("", []string{"x"})
 	w.Enqueue("u", nil)
 	assert.Equal(t, 0, len(w.in))

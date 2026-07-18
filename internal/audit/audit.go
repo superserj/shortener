@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-
-	"github.com/superserj/shortener/internal/logger"
 )
 
 // Action — действие, которое зафиксировало событие аудита.
@@ -25,9 +23,9 @@ const (
 )
 
 const (
-	queueSize    = 256
-	sendTimeout  = 3 * time.Second
-	drainTimeout = 5 * time.Second
+	queueSize           = 256
+	sendTimeout         = 3 * time.Second
+	defaultDrainTimeout = 5 * time.Second
 )
 
 // Event — событие аудита одного обработанного запроса.
@@ -63,117 +61,140 @@ type Sink interface {
 // Auditor рассылает события всем зарегистрированным приёмникам.
 // Нулевое значение не готово к работе, используйте New.
 type Auditor struct {
-	mu     sync.Mutex
-	wg     sync.WaitGroup
-	sinks  []Sink
-	in     chan Event
-	closed bool
+	mu           sync.Mutex
+	wg           sync.WaitGroup // счётчик незавершённых Notify
+	sinks        []Sink
+	workers      []*sinkWorker
+	closed       bool
+	log          *zap.Logger
+	drainTimeout time.Duration
 }
 
-// New создаёт аудитор без приёмников.
-func New() *Auditor {
-	return &Auditor{in: make(chan Event, queueSize)}
+// New создаёт аудитор без приёмников. Логгер передаётся явно, без глобального
+// состояния.
+func New(log *zap.Logger) *Auditor {
+	return &Auditor{log: log, drainTimeout: defaultDrainTimeout}
 }
 
-// Register подписывает приёмник на события. Пока не зарегистрирован ни один
+// Register подписывает приёмник на события. Регистрировать приёмники нужно до
+// запуска Run: на каждый приёмник заводится своя очередь и своя горутина, а Run
+// лишь запускает эти горутины по снимку списка. Пока не зарегистрирован ни один
 // приёмник, Notify не делает ничего.
 func (a *Auditor) Register(s Sink) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sinks = append(a.sinks, s)
+	a.workers = append(a.workers, newSinkWorker(s, a.log))
 }
 
-// Notify публикует событие и сразу возвращает управление.
-//
-// Аудит не должен задерживать ответ, поэтому при переполнении очереди
-// событие отбрасывается. Счётчик wg не даёт shutdown закрыть канал,
-// пока не отработают уже принятые Notify.
+// Notify публикует событие и сразу возвращает управление. Событие кладётся в
+// очередь каждого приёмника независимо и без блокировки: если очередь приёмника
+// переполнена, для него событие отбрасывается, а остальные его получают. Так
+// медленный приёмник забивает только свою очередь и не задерживает ни ответ
+// сервиса, ни доставку другим приёмникам. Счётчик wg не даёт shutdown закрыть
+// очереди, пока не отработают уже принятые Notify.
 func (a *Auditor) Notify(e Event) {
 	a.mu.Lock()
-	if a.closed || len(a.sinks) == 0 {
+	if a.closed {
 		a.mu.Unlock()
 		return
 	}
 	a.wg.Add(1)
+	workers := a.workers
 	a.mu.Unlock()
 	defer a.wg.Done()
 
-	select {
-	case a.in <- e:
-	default:
-		logger.Log.Warn("audit queue is full, event dropped", zap.String("action", string(e.Action)))
-	}
-}
-
-// Run разбирает очередь событий, пока не будет отменён контекст. По отмене
-// дорассылает принятые события и закрывает приёмники, но не дольше drainTimeout:
-// остаток очереди отбрасывается с предупреждением в лог, чтобы неотвечающий
-// приёмник не задерживал остановку сервиса.
-func (a *Auditor) Run(ctx context.Context) {
-	for {
+	for _, w := range workers {
 		select {
-		case e := <-a.in:
-			a.broadcast(e)
-		case <-ctx.Done():
-			a.shutdown()
-			return
+		case w.ch <- e:
+		default:
+			a.log.Warn("audit queue is full, event dropped", zap.String("action", string(e.Action)))
 		}
 	}
 }
 
-// Контекст Run сюда не передаём: при остановке с непустой очередью select мог бы
-// выбрать ветку чтения, и отправка сорвалась бы на уже отменённом контексте.
-func (a *Auditor) broadcast(e Event) {
+// Run запускает по горутине на приёмник (число горутин равно числу приёмников и
+// не растёт) и работает до отмены контекста. Каждая горутина обслуживает свою
+// очередь независимо, поэтому медленный приёмник не задерживает остальных. По
+// отмене best-effort дорассылает уже принятые события и закрывает приёмники, но
+// не дольше drainTimeout: доставка ограничена этим бюджетом, чтобы зависший или
+// сильно отстающий приёмник не задерживал остановку (остаток очереди дропается).
+func (a *Auditor) Run(ctx context.Context) {
 	a.mu.Lock()
-	sinks := make([]Sink, len(a.sinks))
-	copy(sinks, a.sinks)
+	workers := a.workers
 	a.mu.Unlock()
 
-	for _, s := range sinks {
-		ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
-		if err := s.Send(ctx, e); err != nil {
-			logger.Log.Warn("audit send failed", zap.Error(err))
-		}
-		cancel()
+	var wg sync.WaitGroup
+	for _, w := range workers {
+		wg.Add(1)
+		go func(w *sinkWorker) {
+			defer wg.Done()
+			w.run()
+		}(w)
 	}
+
+	<-ctx.Done()
+	a.shutdown(workers, &wg)
 }
 
-// Очередь вычитываем до конца даже после drainTimeout, иначе отправители
-// остались бы висеть на записи в канал.
-func (a *Auditor) shutdown() {
+// shutdown закрывает очереди приёмников и дожидается их горутин, но не дольше
+// drainTimeout. Каждая горутина сама дошлёт остаток своей очереди и закроет свой
+// приёмник (см. sinkWorker.run), поэтому здесь нет общего закрытия приёмников и,
+// как следствие, нет гонки Send/Close: приёмник трогает только его собственная
+// горутина. Незавершившиеся к дедлайну горутины бросаем — процесс всё равно
+// останавливается.
+func (a *Auditor) shutdown(workers []*sinkWorker, wg *sync.WaitGroup) {
 	a.mu.Lock()
 	a.closed = true
 	a.mu.Unlock()
 
+	// Ждём завершения принятых Notify, иначе закрытие очереди могло бы совпасть
+	// с записью в неё (паника «send on closed channel»).
+	a.wg.Wait()
+	for _, w := range workers {
+		close(w.ch)
+	}
+
+	done := make(chan struct{})
 	go func() {
-		a.wg.Wait()
-		close(a.in)
+		wg.Wait()
+		close(done)
 	}()
-
-	deadline := time.Now().Add(drainTimeout)
-	dropped := 0
-	for e := range a.in {
-		if time.Now().After(deadline) {
-			dropped++
-			continue
-		}
-		a.broadcast(e)
+	select {
+	case <-done:
+	case <-time.After(a.drainTimeout):
+		a.log.Warn("audit drain timed out, sink workers still busy")
 	}
-	if dropped > 0 {
-		logger.Log.Warn("audit drain timed out, events dropped", zap.Int("count", dropped))
-	}
-
-	a.closeSinks()
 }
 
-func (a *Auditor) closeSinks() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+// sinkWorker обслуживает один приёмник: последовательно вычитывает свою очередь,
+// отправляет события и по опустошении очереди закрывает приёмник. Отдельная
+// очередь и единственная горутина на приёмник изолируют его от остальных и
+// исключают конкурентный доступ к приёмнику.
+type sinkWorker struct {
+	sink Sink
+	ch   chan Event
+	log  *zap.Logger
+}
 
-	for _, s := range a.sinks {
-		if err := s.Close(); err != nil {
-			logger.Log.Warn("audit sink close failed", zap.Error(err))
+func newSinkWorker(s Sink, log *zap.Logger) *sinkWorker {
+	return &sinkWorker{sink: s, ch: make(chan Event, queueSize), log: log}
+}
+
+// run вычитывает очередь, пока она не будет закрыта и опустошена, затем закрывает
+// приёмник. Контекст для Send всегда свежий (background с таймаутом): отмена Run
+// не должна доходить до приёмника уже отменённой.
+func (w *sinkWorker) run() {
+	defer func() {
+		if err := w.sink.Close(); err != nil {
+			w.log.Warn("audit sink close failed", zap.Error(err))
 		}
+	}()
+	for e := range w.ch {
+		ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
+		if err := w.sink.Send(ctx, e); err != nil {
+			w.log.Warn("audit send failed", zap.Error(err))
+		}
+		cancel()
 	}
-	a.sinks = nil
 }
