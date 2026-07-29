@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/format"
@@ -50,28 +51,29 @@ type target struct {
 	pkg    *packages.Package
 	dir    string
 	helper string
+	// generated — файлы прошлого запуска: объявленные в них методы Reset
+	// исчезнут после перезаписи, поэтому опираться на них нельзя
+	generated map[string][]byte
 }
 
 // generate сканирует пакеты начиная с dir и записывает файлы с методами Reset.
 // Возвращает пути записанных файлов.
 func generate(dir string) ([]string, error) {
-	// прошлые результаты удаляются до разбора: иначе снятый маркер оставил бы
-	// метод навсегда, а удалённая структура сделала бы пакет неразбираемым
-	if err := removeGenerated(dir); err != nil {
+	// прошлые результаты запоминаются, но пока остаются на месте: код, который
+	// вызывает сгенерированные методы, без них не разберётся
+	previous, err := collectGenerated(dir)
+	if err != nil {
 		return nil, err
 	}
 
-	pkgs, err := packages.Load(&packages.Config{Mode: packagesMode, Dir: dir}, scanPattern)
+	pkgs, err := loadPackages(dir)
 	if err != nil {
-		return nil, fmt.Errorf("загрузка пакетов: %w", err)
+		return nil, err
 	}
 
 	var targets []target
 	for _, pkg := range pkgs {
-		if len(pkg.Errors) > 0 {
-			return nil, fmt.Errorf("пакет %s: %w", pkg.PkgPath, pkg.Errors[0])
-		}
-		found, err := markedStructs(pkg)
+		found, err := markedStructs(pkg, previous)
 		if err != nil {
 			return nil, err
 		}
@@ -91,24 +93,195 @@ func generate(dir string) ([]string, error) {
 	}
 
 	written := make([]string, 0, len(byDir))
+	fresh := make(map[string][]byte, len(byDir))
 	for dir, dirTargets := range byDir {
-		path := filepath.Join(dir, genFileName)
+		path, err := filepath.Abs(filepath.Join(dir, genFileName))
+		if err != nil {
+			return nil, fmt.Errorf("путь %s: %w", dir, err)
+		}
 		src, err := renderFile(dirTargets, marked)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
+			return nil, errors.Join(fmt.Errorf("%s: %w", path, err), restoreGenerated(previous))
+		}
+		fresh[path] = src
+	}
+
+	// сначала проверяются все пути и только потом идёт запись: наткнуться на
+	// чужой файл в середине — значит оставить дерево наполовину обновлённым
+	for path := range fresh {
+		if err := checkWritable(path, previous); err != nil {
+			return nil, err
+		}
+	}
+
+	var created []string
+	for path, src := range fresh {
+		// путь запоминается до записи: прерванный WriteFile тоже оставляет файл
+		if _, existed := previous[path]; !existed {
+			created = append(created, path)
 		}
 		if err := os.WriteFile(path, src, genFilePerm); err != nil {
-			return nil, fmt.Errorf("запись %s: %w", path, err)
+			return nil, errors.Join(fmt.Errorf("запись %s: %w", path, err), rollback(created, previous))
 		}
 		written = append(written, path)
 	}
+
+	// у пакетов, где маркеры сняли, прошлый файл больше не нужен. Каталоги
+	// пакетов с несошедшимися типами не трогаются: там структура могла не
+	// разобраться, и её методы удалились бы вместе с рабочим файлом
+	unsure := uncertainDirs(pkgs)
+	stale := make(map[string][]byte)
+	for path, src := range previous {
+		if _, ok := fresh[path]; ok {
+			continue
+		}
+		if unsure[filepath.Dir(path)] {
+			continue
+		}
+		stale[path] = src
+	}
+	if err := removePaths(stale); err != nil {
+		return nil, err
+	}
+
 	sort.Strings(written)
 
 	return written, nil
 }
 
+// loadPackages разбирает пакеты модуля.
+//
+// Ошибки вывода типов не считаются фатальными: до первого запуска генератора
+// код, который вызывает ещё не сгенерированный Reset, типы не проходит — именно
+// ради него генератор и запускают. Структуры при этом разбираются полностью.
+// А вот сломанный синтаксис останавливает работу: по обрывкам дерева нельзя
+// понять, какие структуры помечены, и генератор молча выбросил бы их методы.
+func loadPackages(dir string) ([]*packages.Package, error) {
+	pkgs, err := packages.Load(&packages.Config{Mode: packagesMode, Dir: dir}, scanPattern)
+	if err != nil {
+		return nil, fmt.Errorf("загрузка пакетов: %w", err)
+	}
+	for _, pkg := range pkgs {
+		for _, pkgErr := range pkg.Errors {
+			if pkgErr.Kind == packages.ParseError {
+				return nil, fmt.Errorf("пакет %s: %w", pkg.PkgPath, pkgErr)
+			}
+		}
+		// пакет с ошибками, из которого не удалось получить ни одного дерева,
+		// разобрать нечем: молча пропустить его — значит потерять его методы
+		if len(pkg.Errors) > 0 && len(pkg.Syntax) == 0 {
+			return nil, fmt.Errorf("пакет %s: %w", pkg.PkgPath, pkg.Errors[0])
+		}
+	}
+	return pkgs, nil
+}
+
+// uncertainDirs возвращает каталоги пакетов, чьи типы не сошлись: разбор таких
+// пакетов неполон, и делать выводы об отсутствии маркеров по ним нельзя.
+func uncertainDirs(pkgs []*packages.Package) map[string]bool {
+	dirs := make(map[string]bool)
+	for _, pkg := range pkgs {
+		if len(pkg.Errors) == 0 {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			dir, err := filepath.Abs(filepath.Dir(pkg.Fset.Position(file.Pos()).Filename))
+			if err != nil {
+				continue
+			}
+			dirs[dir] = true
+		}
+	}
+	return dirs
+}
+
+// collectGenerated читает ранее сгенерированные файлы во всём дереве каталогов.
+// Чужие файлы с тем же именем не учитываются: признак свой — заголовок.
+func collectGenerated(root string) (map[string][]byte, error) {
+	found := make(map[string][]byte)
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || entry.Name() != genFileName {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("чтение %s: %w", path, err)
+		}
+		if !strings.HasPrefix(string(data), genHeader) {
+			return nil
+		}
+		// пути приводятся к абсолютным: имена новых файлов приходят из позиций
+		// разбора и всегда абсолютны, а обход дерева повторяет форму аргумента
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return fmt.Errorf("путь %s: %w", path, err)
+		}
+		found[abs] = data
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return found, nil
+}
+
+// checkWritable не даёт затереть чужой файл: перезаписывается только то, что
+// генератор писал сам, а имя reset.gen.go мог занять и человек.
+func checkWritable(path string, generated map[string][]byte) error {
+	if _, ours := generated[path]; ours {
+		return nil
+	}
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%s: файл занят чужим кодом, генератор его не перезаписывает", path)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("проверка %s: %w", path, err)
+	}
+	return nil
+}
+
+// removePaths удаляет перечисленные файлы, не останавливаясь на первой ошибке:
+// остальные файлы всё равно нужно убрать.
+func removePaths(files map[string][]byte) error {
+	var errs []error
+	for path := range files {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("удаление %s: %w", path, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// rollback отменяет частично выполненное обновление: только что созданные файлы
+// удаляются, прежние возвращаются на место.
+func rollback(created []string, previous map[string][]byte) error {
+	var errs []error
+	for _, path := range created {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("откат %s: %w", path, err))
+		}
+	}
+	errs = append(errs, restoreGenerated(previous))
+	return errors.Join(errs...)
+}
+
+// restoreGenerated возвращает файлы в исходное состояние: генератор не должен
+// оставлять проект несобираемым, если сам завершился с ошибкой.
+func restoreGenerated(files map[string][]byte) error {
+	var errs []error
+	for path, data := range files {
+		if err := os.WriteFile(path, data, genFilePerm); err != nil {
+			errs = append(errs, fmt.Errorf("восстановление %s: %w", path, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // markedStructs собирает структуры пакета, над которыми стоит маркер генерации.
-func markedStructs(pkg *packages.Package) ([]target, error) {
+// Набор generated нужен, чтобы отличить наш прошлый результат от чужого кода.
+func markedStructs(pkg *packages.Package, generated map[string][]byte) ([]target, error) {
 	var found []target
 	for _, file := range pkg.Syntax {
 		dir := filepath.Dir(pkg.Fset.Position(file.Pos()).Filename)
@@ -132,16 +305,17 @@ func markedStructs(pkg *packages.Package) ([]target, error) {
 				}
 				// метод, написанный руками, генератор не заменяет: два
 				// объявления Reset сделали бы пакет несобираемым
-				if hasOwnReset(obj, pkg.Types) {
+				if hasOwnReset(obj, pkg, generated) {
 					return nil, fmt.Errorf("%s.%s: метод %s уже объявлен, маркер %s лишний",
 						pkg.PkgPath, obj.Name(), resetMethod, generateMarker)
 				}
 				found = append(found, target{
-					obj:    obj,
-					strct:  strct,
-					pkg:    pkg,
-					dir:    dir,
-					helper: helperName(pkg),
+					obj:       obj,
+					strct:     strct,
+					pkg:       pkg,
+					dir:       dir,
+					helper:    helperName(pkg),
+					generated: generated,
 				})
 			}
 		}
@@ -149,40 +323,27 @@ func markedStructs(pkg *packages.Package) ([]target, error) {
 	return found, nil
 }
 
-// removeGenerated удаляет ранее сгенерированные файлы во всём дереве каталогов.
-// Чужие файлы с тем же именем не трогаются: удаляются только те, что начинаются
-// с нашего заголовка.
-func removeGenerated(root string) error {
-	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || entry.Name() != genFileName {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("чтение %s: %w", path, err)
-		}
-		if !strings.HasPrefix(string(data), genHeader) {
-			return nil
-		}
-		if err := os.Remove(path); err != nil {
-			return fmt.Errorf("удаление %s: %w", path, err)
-		}
-		return nil
-	})
-}
-
-// hasOwnReset сообщает, объявлен ли метод Reset в исходном коде пакета.
-func hasOwnReset(obj *types.TypeName, pkg *types.Package) bool {
+// hasOwnReset сообщает, написан ли метод Reset руками. Метод из прошлого
+// запуска генератора таковым не считается: он будет перезаписан. Совпадения по
+// имени файла мало — чужой reset.gen.go без нашего заголовка трогать нельзя,
+// поэтому проверяется принадлежность к собранному набору.
+func hasOwnReset(obj *types.TypeName, pkg *packages.Package, generated map[string][]byte) bool {
 	named, ok := obj.Type().(*types.Named)
 	if !ok {
 		return false
 	}
-	fn, _, _ := types.LookupFieldOrMethod(types.NewPointer(named), true, pkg, resetMethod)
-	_, ok = fn.(*types.Func)
-	return ok
+	method, _, _ := types.LookupFieldOrMethod(types.NewPointer(named), true, pkg.Types, resetMethod)
+	fn, ok := method.(*types.Func)
+	if !ok {
+		return false
+	}
+	path, err := filepath.Abs(pkg.Fset.Position(fn.Pos()).Filename)
+	if err != nil {
+		// не смогли опознать файл — считаем метод чужим, так безопаснее
+		return true
+	}
+	_, ours := generated[path]
+	return !ours
 }
 
 // hasMarker ищет маркер в комментариях объявления типа: он может стоять и над
@@ -294,7 +455,7 @@ func resetStatement(selector string, typ types.Type, t target, marked map[*types
 			inner string
 			used  bool
 		)
-		if hasReset(typ, t.pkg.Types, marked) {
+		if hasReset(typ, t, marked) {
 			inner = selector + "." + resetMethod + "()"
 		} else {
 			inner, used = resetStatement(deref(selector), ptr.Elem(), t, marked)
@@ -305,7 +466,7 @@ func resetStatement(selector string, typ types.Type, t target, marked map[*types
 		return fmt.Sprintf("if %s != nil {\n%s\n}", selector, inner), used
 	}
 
-	if hasReset(typ, t.pkg.Types, marked) {
+	if hasReset(typ, t, marked) {
 		return selector + "." + resetMethod + "()", false
 	}
 
@@ -344,7 +505,7 @@ func addressOf(selector string) string {
 //
 // Интерфейсы исключены: значение интерфейса по умолчанию nil, и вызов метода на
 // нём паникует, поэтому такое поле обнуляется, а не сбрасывается.
-func hasReset(typ types.Type, pkg *types.Package, marked map[*types.TypeName]bool) bool {
+func hasReset(typ types.Type, t target, marked map[*types.TypeName]bool) bool {
 	if _, ok := typ.Underlying().(*types.Interface); ok {
 		return false
 	}
@@ -357,13 +518,23 @@ func hasReset(typ types.Type, pkg *types.Package, marked map[*types.TypeName]boo
 		}
 	}
 
-	obj, _, _ := types.LookupFieldOrMethod(typ, true, pkg, resetMethod)
+	obj, _, _ := types.LookupFieldOrMethod(typ, true, t.pkg.Types, resetMethod)
 	fn, ok := obj.(*types.Func)
 	if !ok {
 		return false
 	}
 	sig, ok := fn.Type().(*types.Signature)
-	return ok && sig.Params().Len() == 0 && sig.Results().Len() == 0
+	if !ok || sig.Params().Len() != 0 || sig.Results().Len() != 0 {
+		return false
+	}
+	// метод из прошлого результата генерации не в счёт: маркер могли снять, и
+	// тогда после перезаписи такого метода не станет
+	path, err := filepath.Abs(t.pkg.Fset.Position(fn.Pos()).Filename)
+	if err != nil {
+		return false
+	}
+	_, fromGenerated := t.generated[path]
+	return !fromGenerated
 }
 
 // zeroLiteral возвращает литерал нулевого значения примитивного типа.

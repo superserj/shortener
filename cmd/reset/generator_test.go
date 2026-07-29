@@ -11,6 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testFilePerm — права на файлы временного модуля, который собирает тест.
+const testFilePerm = 0o600
+
 // sampleModule — модуль с одной помеченной структурой на каждый разбираемый
 // случай: примитивы, слайс, мапа, указатели, вложенные структуры и типы,
 // которые сбрасываются нулевым значением.
@@ -70,8 +73,8 @@ func generateSample(t *testing.T) string {
 	t.Helper()
 
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module sample\n\ngo 1.26\n"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sample.go"), []byte(sampleModule), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module sample\n\ngo 1.26\n"), testFilePerm))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sample.go"), []byte(sampleModule), testFilePerm))
 
 	written, err := generate(dir)
 	require.NoError(t, err)
@@ -156,16 +159,16 @@ func TestGenerateResetMethods(t *testing.T) {
 
 func TestGenerateRemovesStaleFile(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module stale\n\ngo 1.26\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module stale\n\ngo 1.26\n"), testFilePerm))
 	source := filepath.Join(dir, "stale.go")
-	require.NoError(t, os.WriteFile(source, []byte("package stale\n\n// generate:reset\ntype T struct{ N int }\n"), 0o600))
+	require.NoError(t, os.WriteFile(source, []byte("package stale\n\n// generate:reset\ntype T struct{ N int }\n"), testFilePerm))
 
 	written, err := generate(dir)
 	require.NoError(t, err)
 	require.Len(t, written, 1)
 
 	// маркер сняли — метод не должен пережить следующую генерацию
-	require.NoError(t, os.WriteFile(source, []byte("package stale\n\ntype T struct{ N int }\n"), 0o600))
+	require.NoError(t, os.WriteFile(source, []byte("package stale\n\ntype T struct{ N int }\n"), testFilePerm))
 
 	written, err = generate(dir)
 	require.NoError(t, err)
@@ -176,9 +179,9 @@ func TestGenerateRemovesStaleFile(t *testing.T) {
 
 func TestGenerateRejectsHandwrittenReset(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module manual\n\ngo 1.26\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module manual\n\ngo 1.26\n"), testFilePerm))
 	source := "package manual\n\n// generate:reset\ntype T struct{ N int }\n\nfunc (t *T) Reset() { t.N = 0 }\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "manual.go"), []byte(source), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "manual.go"), []byte(source), testFilePerm))
 
 	_, err := generate(dir)
 	require.Error(t, err)
@@ -187,8 +190,8 @@ func TestGenerateRejectsHandwrittenReset(t *testing.T) {
 
 func TestGenerateSkipsPackagesWithoutMarkers(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module empty\n\ngo 1.26\n"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "empty.go"), []byte("package empty\n\ntype T struct{ N int }\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module empty\n\ngo 1.26\n"), testFilePerm))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "empty.go"), []byte("package empty\n\ntype T struct{ N int }\n"), testFilePerm))
 
 	written, err := generate(dir)
 	require.NoError(t, err)
