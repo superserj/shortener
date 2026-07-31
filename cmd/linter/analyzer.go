@@ -48,18 +48,32 @@ var ExitCheckAnalyzer = &analysis.Analyzer{
 
 func run(pass *analysis.Pass) (any, error) {
 	for _, file := range pass.Files {
+		// файл обходится за один проход. exitAllowed — стек признаков «здесь
+		// выход из процесса разрешён», по записи на каждый узел текущего пути:
+		// закончив с детьми узла, ast.Inspect вызывает колбэк с nil, и запись
+		// снимается. Признак меняется только на границах функций, остальные
+		// узлы наследуют родительский.
+		var exitAllowed []bool
 		ast.Inspect(file, func(n ast.Node) bool {
-			decl, ok := n.(*ast.FuncDecl)
-			if !ok {
-				// вызовы вне тела функции — например, в инициализаторах
-				// переменных уровня пакета — из main тоже не сделаны
-				if call, ok := n.(*ast.CallExpr); ok {
-					checkCall(pass, call, false)
-				}
+			if n == nil {
+				exitAllowed = exitAllowed[:len(exitAllowed)-1]
 				return true
 			}
-			inspectBody(pass, decl.Body, isMainFunc(pass, decl))
-			return false
+			// пустой стек — узел вне функций, например инициализатор переменной
+			// уровня пакета: такие вызовы из main тоже не сделаны
+			allowed := len(exitAllowed) > 0 && exitAllowed[len(exitAllowed)-1]
+			switch node := n.(type) {
+			case *ast.FuncDecl:
+				allowed = isMainFunc(pass, node)
+			case *ast.FuncLit:
+				// функциональный литерал — самостоятельная функция, выход из
+				// него не разрешается даже внутри main
+				allowed = false
+			case *ast.CallExpr:
+				checkCall(pass, node, allowed)
+			}
+			exitAllowed = append(exitAllowed, allowed)
+			return true
 		})
 	}
 	return nil, nil
@@ -68,23 +82,6 @@ func run(pass *analysis.Pass) (any, error) {
 // isMainFunc сообщает, объявлена ли decl как функция main пакета main.
 func isMainFunc(pass *analysis.Pass, decl *ast.FuncDecl) bool {
 	return pass.Pkg.Name() == mainPkg && decl.Recv == nil && decl.Name.Name == mainFunc
-}
-
-// inspectBody обходит тело функции, помня, разрешён ли в нём выход из процесса.
-func inspectBody(pass *analysis.Pass, body ast.Node, inMainFunc bool) {
-	if body == nil {
-		return
-	}
-	ast.Inspect(body, func(n ast.Node) bool {
-		switch node := n.(type) {
-		case *ast.FuncLit:
-			inspectBody(pass, node.Body, false)
-			return false
-		case *ast.CallExpr:
-			checkCall(pass, node, inMainFunc)
-		}
-		return true
-	})
 }
 
 func checkCall(pass *analysis.Pass, call *ast.CallExpr, inMainFunc bool) {

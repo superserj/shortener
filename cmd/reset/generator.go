@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -372,73 +373,123 @@ func helperName(pkg *packages.Package) string {
 	return name
 }
 
-// receiver печатает приёмник метода. У обобщённой структуры перечисляются
-// параметры типа: func (x *Box[T]) Reset().
-func receiver(obj *types.TypeName) string {
+// receiverType собирает выражение типа приёмника. У обобщённой структуры
+// перечисляются параметры типа: func (x *Box[T]) Reset().
+func receiverType(obj *types.TypeName) ast.Expr {
+	name := ast.NewIdent(obj.Name())
 	named, ok := obj.Type().(*types.Named)
 	if !ok || named.TypeParams().Len() == 0 {
-		return obj.Name()
+		return name
 	}
 	params := named.TypeParams()
-	names := make([]string, 0, params.Len())
+	args := make([]ast.Expr, 0, params.Len())
 	for i := 0; i < params.Len(); i++ {
-		names = append(names, params.At(i).Obj().Name())
+		args = append(args, ast.NewIdent(params.At(i).Obj().Name()))
 	}
-	return obj.Name() + "[" + strings.Join(names, ", ") + "]"
+	if len(args) == 1 {
+		return &ast.IndexExpr{X: name, Index: args[0]}
+	}
+	return &ast.IndexListExpr{X: name, Indices: args}
 }
 
-// renderFile собирает содержимое reset.gen.go для одного пакета.
+// renderFile собирает содержимое reset.gen.go для одного пакета. Объявления
+// строятся деревом разбора и печатаются go/format; комментарии к ним идут
+// отдельными строками, потому что go/printer расставляет комментарии по
+// позициям узлов, а у построенного дерева позиций нет.
 func renderFile(targets []target, marked map[*types.TypeName]bool) ([]byte, error) {
 	sort.Slice(targets, func(i, j int) bool { return targets[i].obj.Name() < targets[j].obj.Name() })
 
-	var body strings.Builder
+	var out bytes.Buffer
+	fmt.Fprintf(&out, "%s\n\npackage %s\n", genHeader, targets[0].pkg.Types.Name())
+
+	fset := token.NewFileSet()
 	helperUsed := false
 	for _, t := range targets {
-		stmts, used := methodBody(t, marked)
+		decl, used := resetDecl(t, marked)
 		helperUsed = helperUsed || used
-
-		fmt.Fprintf(&body, "\n// %s возвращает %s в начальное состояние.\n", resetMethod, t.obj.Name())
-		fmt.Fprintf(&body, "func (%s *%s) %s() {\n", receiverName, receiver(t.obj), resetMethod)
-		fmt.Fprintf(&body, "if %s == nil {\nreturn\n}\n", receiverName)
-		for _, stmt := range stmts {
-			body.WriteString(stmt)
-			body.WriteString("\n")
+		fmt.Fprintf(&out, "\n// %s возвращает %s в начальное состояние.\n", resetMethod, t.obj.Name())
+		if err := format.Node(&out, fset, decl); err != nil {
+			return nil, fmt.Errorf("печать %s.%s: %w", t.obj.Name(), resetMethod, err)
 		}
-		body.WriteString("}\n")
+		out.WriteString("\n")
 	}
-
-	var out strings.Builder
-	out.WriteString(genHeader)
-	out.WriteString("\n\npackage ")
-	out.WriteString(targets[0].pkg.Types.Name())
-	out.WriteString("\n")
-	out.WriteString(body.String())
 
 	if helperUsed {
 		helper := targets[0].helper
 		fmt.Fprintf(&out, "\n// %s присваивает значению нулевое значение его типа.\n", helper)
-		fmt.Fprintf(&out, "func %s[T any](v *T) {\nvar zero T\n*v = zero\n}\n", helper)
+		if err := format.Node(&out, fset, helperDecl(helper)); err != nil {
+			return nil, fmt.Errorf("печать %s: %w", helper, err)
+		}
+		out.WriteString("\n")
 	}
 
-	src, err := format.Source([]byte(out.String()))
+	src, err := format.Source(out.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("форматирование: %w", err)
 	}
 	return src, nil
 }
 
+// resetDecl собирает объявление метода Reset одной структуры: проверку
+// приёмника на nil и операторы сброса полей.
+func resetDecl(t target, marked map[*types.TypeName]bool) (*ast.FuncDecl, bool) {
+	stmts, helperUsed := methodBody(t, marked)
+
+	body := make([]ast.Stmt, 0, len(stmts)+1)
+	body = append(body, &ast.IfStmt{
+		Cond: &ast.BinaryExpr{X: ast.NewIdent(receiverName), Op: token.EQL, Y: ast.NewIdent("nil")},
+		Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ReturnStmt{}}},
+	})
+	body = append(body, stmts...)
+
+	return &ast.FuncDecl{
+		Recv: &ast.FieldList{List: []*ast.Field{{
+			Names: []*ast.Ident{ast.NewIdent(receiverName)},
+			Type:  &ast.StarExpr{X: receiverType(t.obj)},
+		}}},
+		Name: ast.NewIdent(resetMethod),
+		Type: &ast.FuncType{Params: &ast.FieldList{}},
+		Body: &ast.BlockStmt{List: body},
+	}, helperUsed
+}
+
+// helperDecl собирает объявление хелпера обнуления:
+//
+//	func resetZero[T any](v *T) {
+//		var zero T
+//		*v = zero
+//	}
+func helperDecl(name string) *ast.FuncDecl {
+	typeParam := ast.NewIdent("T")
+	arg := ast.NewIdent("v")
+	zero := ast.NewIdent("zero")
+	return &ast.FuncDecl{
+		Name: ast.NewIdent(name),
+		Type: &ast.FuncType{
+			TypeParams: &ast.FieldList{List: []*ast.Field{{Names: []*ast.Ident{typeParam}, Type: ast.NewIdent("any")}}},
+			Params:     &ast.FieldList{List: []*ast.Field{{Names: []*ast.Ident{arg}, Type: &ast.StarExpr{X: typeParam}}}},
+		},
+		Body: &ast.BlockStmt{List: []ast.Stmt{
+			&ast.DeclStmt{Decl: &ast.GenDecl{Tok: token.VAR, Specs: []ast.Spec{
+				&ast.ValueSpec{Names: []*ast.Ident{zero}, Type: typeParam},
+			}}},
+			assignStmt(&ast.StarExpr{X: arg}, zero),
+		}},
+	}
+}
+
 // methodBody возвращает операторы сброса всех полей структуры и признак того,
 // что понадобился хелпер обнуления.
-func methodBody(t target, marked map[*types.TypeName]bool) (stmts []string, helperUsed bool) {
+func methodBody(t target, marked map[*types.TypeName]bool) (stmts []ast.Stmt, helperUsed bool) {
 	for i := 0; i < t.strct.NumFields(); i++ {
 		field := t.strct.Field(i)
 		// поле-пустышка недоступно по имени, сбрасывать его нечем
 		if field.Name() == blankField {
 			continue
 		}
-		selector := receiverName + "." + field.Name()
-		stmt, used := resetStatement(selector, field.Type(), t, marked)
-		if stmt == "" {
+		value := &ast.SelectorExpr{X: ast.NewIdent(receiverName), Sel: ast.NewIdent(field.Name())}
+		stmt, used := resetStatement(value, field.Type(), t, marked)
+		if stmt == nil {
 			continue
 		}
 		helperUsed = helperUsed || used
@@ -448,55 +499,74 @@ func methodBody(t target, marked map[*types.TypeName]bool) (stmts []string, help
 }
 
 // resetStatement строит оператор сброса одного значения по правилам инкремента.
-func resetStatement(selector string, typ types.Type, t target, marked map[*types.TypeName]bool) (string, bool) {
+func resetStatement(value ast.Expr, typ types.Type, t target, marked map[*types.TypeName]bool) (ast.Stmt, bool) {
 	// указатель сбрасывает не сам себя, а значение под ним, и только если оно есть
 	if ptr, ok := typ.Underlying().(*types.Pointer); ok {
 		var (
-			inner string
+			inner ast.Stmt
 			used  bool
 		)
 		if hasReset(typ, t, marked) {
-			inner = selector + "." + resetMethod + "()"
+			inner = resetCall(value)
 		} else {
-			inner, used = resetStatement(deref(selector), ptr.Elem(), t, marked)
+			inner, used = resetStatement(deref(value), ptr.Elem(), t, marked)
 		}
-		if inner == "" {
-			return "", false
+		if inner == nil {
+			return nil, false
 		}
-		return fmt.Sprintf("if %s != nil {\n%s\n}", selector, inner), used
+		return &ast.IfStmt{
+			Cond: &ast.BinaryExpr{X: value, Op: token.NEQ, Y: ast.NewIdent("nil")},
+			Body: &ast.BlockStmt{List: []ast.Stmt{inner}},
+		}, used
 	}
 
 	if hasReset(typ, t, marked) {
-		return selector + "." + resetMethod + "()", false
+		return resetCall(value), false
 	}
 
 	switch under := typ.Underlying().(type) {
 	case *types.Basic:
-		return fmt.Sprintf("%s = %s", selector, zeroLiteral(under)), false
+		return assignStmt(value, zeroLiteral(under)), false
 	case *types.Slice:
 		// длина сбрасывается, ёмкость сохраняется: буфер переиспользуется
-		return fmt.Sprintf("%s = %s[:0]", selector, selector), false
+		return assignStmt(value, &ast.SliceExpr{X: value, High: &ast.BasicLit{Kind: token.INT, Value: "0"}}), false
 	case *types.Map:
-		return fmt.Sprintf("clear(%s)", selector), false
+		return callStmt(ast.NewIdent("clear"), value), false
 	default:
-		return fmt.Sprintf("%s(%s)", t.helper, addressOf(selector)), true
+		return callStmt(ast.NewIdent(t.helper), addressOf(value)), true
 	}
 }
 
 // deref оборачивает выражение разыменованием, сохраняя приоритет операций:
 // (*x.f)[:0] — это срез значения, а *x.f[:0] — срез указателя.
-func deref(selector string) string {
-	return "(*" + selector + ")"
+func deref(value ast.Expr) ast.Expr {
+	return &ast.ParenExpr{X: &ast.StarExpr{X: value}}
 }
 
-// addressOf берёт адрес выражения, схлопывая &(*p) обратно в p.
-func addressOf(selector string) string {
-	if inner, ok := strings.CutPrefix(selector, "(*"); ok {
-		if inner, ok := strings.CutSuffix(inner, ")"); ok {
-			return inner
+// addressOf берёт адрес выражения. Адрес разыменования схлопывается обратно в
+// исходный указатель прямо на дереве: &(*p) — это p.
+func addressOf(value ast.Expr) ast.Expr {
+	if paren, ok := value.(*ast.ParenExpr); ok {
+		if star, ok := paren.X.(*ast.StarExpr); ok {
+			return star.X
 		}
 	}
-	return "&" + selector
+	return &ast.UnaryExpr{Op: token.AND, X: value}
+}
+
+// resetCall строит вызов метода Reset у значения value.
+func resetCall(value ast.Expr) ast.Stmt {
+	return callStmt(&ast.SelectorExpr{X: value, Sel: ast.NewIdent(resetMethod)})
+}
+
+// callStmt строит оператор-вызов функции fun с аргументами args.
+func callStmt(fun ast.Expr, args ...ast.Expr) ast.Stmt {
+	return &ast.ExprStmt{X: &ast.CallExpr{Fun: fun, Args: args}}
+}
+
+// assignStmt строит присваивание значения value выражению dst.
+func assignStmt(dst, value ast.Expr) ast.Stmt {
+	return &ast.AssignStmt{Lhs: []ast.Expr{dst}, Tok: token.ASSIGN, Rhs: []ast.Expr{value}}
 }
 
 // hasReset сообщает, есть ли у типа метод Reset без аргументов и возвращаемых
@@ -538,18 +608,18 @@ func hasReset(typ types.Type, t target, marked map[*types.TypeName]bool) bool {
 }
 
 // zeroLiteral возвращает литерал нулевого значения примитивного типа.
-func zeroLiteral(basic *types.Basic) string {
+func zeroLiteral(basic *types.Basic) ast.Expr {
 	switch info := basic.Info(); {
 	case info&types.IsBoolean != 0:
-		return "false"
+		return ast.NewIdent("false")
 	case info&types.IsString != 0:
-		return `""`
+		return &ast.BasicLit{Kind: token.STRING, Value: `""`}
 	case info&types.IsComplex != 0:
-		return "0i"
+		return &ast.BasicLit{Kind: token.IMAG, Value: "0i"}
 	case info&types.IsNumeric != 0:
-		return "0"
+		return &ast.BasicLit{Kind: token.INT, Value: "0"}
 	default:
 		// unsafe.Pointer и прочие нечисловые примитивы
-		return "nil"
+		return ast.NewIdent("nil")
 	}
 }
