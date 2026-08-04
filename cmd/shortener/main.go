@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/superserj/shortener/internal/audit"
 	"github.com/superserj/shortener/internal/auth"
+	"github.com/superserj/shortener/internal/cert"
 	"github.com/superserj/shortener/internal/config"
 	"github.com/superserj/shortener/internal/deleter"
 	"github.com/superserj/shortener/internal/handler"
@@ -50,7 +53,10 @@ func newRouter(h *handler.Handler, a *auth.Authenticator, log *zap.Logger) chi.R
 func main() {
 	printBuildInfo(os.Stdout)
 
-	cfg := config.New()
+	cfg, err := config.New()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	lg, err := logger.New(cfg.LogLevel)
 	if err != nil {
@@ -94,10 +100,17 @@ func main() {
 	a := auth.New(cfg.AuthSecret)
 
 	srv := &http.Server{Addr: cfg.ServerAddr, Handler: newRouter(h, a, lg)}
+	if cfg.EnableHTTPS {
+		tlsConfig, err := newTLSConfig(cfg.ServerAddr)
+		if err != nil {
+			lg.Fatal("init tls", zap.Error(err))
+		}
+		srv.TLSConfig = tlsConfig
+	}
 
 	go func() {
-		lg.Info("starting server", zap.String("addr", cfg.ServerAddr))
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		lg.Info("starting server", zap.String("addr", cfg.ServerAddr), zap.Bool("https", cfg.EnableHTTPS))
+		if err := serve(srv, cfg.EnableHTTPS); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			lg.Fatal("listen and serve", zap.Error(err))
 		}
 	}()
@@ -124,6 +137,34 @@ func main() {
 
 	auditCancel()
 	<-auditDone
+}
+
+// serve поднимает сервер в выбранном режиме. Сертификат и ключ для TLS уже
+// лежат в srv.TLSConfig, поэтому пути к файлам не нужны.
+func serve(srv *http.Server, enableHTTPS bool) error {
+	if enableHTTPS {
+		return srv.ListenAndServeTLS("", "")
+	}
+	return srv.ListenAndServe()
+}
+
+// newTLSConfig выпускает самоподписанный сертификат для того адреса, на котором
+// поднимается сервер.
+func newTLSConfig(addr string) (*tls.Config, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// адрес без порта считаем именем хоста
+		host = addr
+	}
+
+	certificate, err := cert.Certificate(host)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }
 
 func newAuditor(cfg *config.Config, log *zap.Logger) (*audit.Auditor, error) {
