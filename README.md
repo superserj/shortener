@@ -43,6 +43,41 @@ git fetch template && git checkout template/v2 .github
 - **Hexagonal Architecture**
 - **Layered Architecture**
 
+## Конфигурация
+
+Настройки берутся из трёх источников. Приоритет по убыванию: переменная
+окружения, флаг командной строки, файл конфигурации, значение по умолчанию.
+
+| Флаг | Переменная окружения | Значение по умолчанию | Ключ в файле |
+| --- | --- | --- | --- |
+| `-a` | `SERVER_ADDRESS` | `localhost:8080` | `server_address` |
+| `-b` | `BASE_URL` | `http://localhost:8080` | `base_url` |
+| `-l` | `LOG_LEVEL` | `info` | `log_level` |
+| `-f` | `FILE_STORAGE_PATH` | `/tmp/short-url-db.json` | `file_storage_path` |
+| `-d` | `DATABASE_DSN` | пусто | `database_dsn` |
+| `-s` | `ENABLE_HTTPS` | выключено | `enable_https` |
+| `-auth-secret` | `AUTH_SECRET` | `shortener-default-secret` | `auth_secret` |
+| `-audit-file` | `AUDIT_FILE` | пусто | `audit_file` |
+| `-audit-url` | `AUDIT_URL` | пусто | `audit_url` |
+| `-c`, `-config` | `CONFIG` | пусто | — |
+
+Путь к файлу конфигурации задаётся флагом `-c` (то же самое — `-config`) или
+переменной `CONFIG`. Формат файла:
+
+```json
+{
+    "server_address": "localhost:8080",
+    "base_url": "http://localhost:8080",
+    "file_storage_path": "/tmp/short-url-db.json",
+    "database_dsn": "",
+    "enable_https": true
+}
+```
+
+Отсутствующий ключ ничего не переопределяет, поэтому файл можно держать
+неполным. Значения из файла применяются только к тем настройкам, которые не
+заданы ни флагом, ни переменной окружения.
+
 ## HTTPS
 
 С флагом `-s` или переменной `ENABLE_HTTPS` сервис поднимается по HTTPS. При

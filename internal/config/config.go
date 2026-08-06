@@ -1,8 +1,10 @@
-// Пакет config собирает настройки сервиса из флагов и переменных окружения.
-// Переменная окружения имеет приоритет над флагом.
+// Пакет config собирает настройки сервиса из файла конфигурации, флагов и
+// переменных окружения. Приоритет значений: переменная окружения, затем флаг,
+// затем файл конфигурации, затем значение по умолчанию.
 package config
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -20,6 +22,22 @@ type Config struct {
 	AuditFile       string
 	AuditURL        string
 	EnableHTTPS     bool
+	ConfigFile      string
+}
+
+// fileConfig повторяет настройки в виде JSON. Поля объявлены указателями, чтобы
+// отличать отсутствующий ключ от заданного нулевого значения: отсутствующий
+// ключ ничего не переопределяет.
+type fileConfig struct {
+	ServerAddr      *string `json:"server_address"`
+	BaseURL         *string `json:"base_url"`
+	LogLevel        *string `json:"log_level"`
+	FileStoragePath *string `json:"file_storage_path"`
+	DatabaseDSN     *string `json:"database_dsn"`
+	AuthSecret      *string `json:"auth_secret"`
+	AuditFile       *string `json:"audit_file"`
+	AuditURL        *string `json:"audit_url"`
+	EnableHTTPS     *bool   `json:"enable_https"`
 }
 
 // New разбирает аргументы командной строки и переменные окружения и возвращает
@@ -43,25 +61,35 @@ func parse(name string, args []string, lookupEnv func(string) (string, bool)) (*
 	fs.StringVar(&cfg.AuthSecret, "auth-secret", "shortener-default-secret", "secret key for auth cookie signature")
 	fs.StringVar(&cfg.AuditFile, "audit-file", "", "path to audit log file, empty disables file audit")
 	fs.StringVar(&cfg.AuditURL, "audit-url", "", "url of remote audit sink, empty disables remote audit")
+	fs.StringVar(&cfg.ConfigFile, "c", "", "path to JSON config file")
+	fs.StringVar(&cfg.ConfigFile, "config", "", "path to JSON config file, long form of -c")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
 
-	envString := func(key string, dst *string) {
-		if v, ok := lookupEnv(key); ok {
-			*dst = v
+	// set отмечает настройки, заданные флагом или переменной окружения:
+	// значения из файла конфигурации их не переопределяют
+	set := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	envString := func(key, name string, dst *string) {
+		v, ok := lookupEnv(key)
+		if !ok {
+			return
 		}
+		*dst = v
+		set[name] = true
 	}
 
-	envString("SERVER_ADDRESS", &cfg.ServerAddr)
-	envString("BASE_URL", &cfg.BaseURL)
-	envString("LOG_LEVEL", &cfg.LogLevel)
-	envString("FILE_STORAGE_PATH", &cfg.FileStoragePath)
-	envString("DATABASE_DSN", &cfg.DatabaseDSN)
-	envString("AUTH_SECRET", &cfg.AuthSecret)
-	envString("AUDIT_FILE", &cfg.AuditFile)
-	envString("AUDIT_URL", &cfg.AuditURL)
+	envString("SERVER_ADDRESS", "a", &cfg.ServerAddr)
+	envString("BASE_URL", "b", &cfg.BaseURL)
+	envString("LOG_LEVEL", "l", &cfg.LogLevel)
+	envString("FILE_STORAGE_PATH", "f", &cfg.FileStoragePath)
+	envString("DATABASE_DSN", "d", &cfg.DatabaseDSN)
+	envString("AUTH_SECRET", "auth-secret", &cfg.AuthSecret)
+	envString("AUDIT_FILE", "audit-file", &cfg.AuditFile)
+	envString("AUDIT_URL", "audit-url", &cfg.AuditURL)
 
 	if v, ok := lookupEnv("ENABLE_HTTPS"); ok {
 		enabled, err := parseBool(v)
@@ -69,9 +97,54 @@ func parse(name string, args []string, lookupEnv func(string) (string, bool)) (*
 			return nil, fmt.Errorf("parse ENABLE_HTTPS: %w", err)
 		}
 		cfg.EnableHTTPS = enabled
+		set["s"] = true
+	}
+	if v, ok := lookupEnv("CONFIG"); ok {
+		cfg.ConfigFile = v
 	}
 
+	if cfg.ConfigFile == "" {
+		return cfg, nil
+	}
+	if err := applyFile(cfg, set); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// applyFile дополняет настройки значениями из файла конфигурации, не трогая те,
+// что уже заданы флагом или переменной окружения.
+func applyFile(cfg *Config, set map[string]bool) error {
+	data, err := os.ReadFile(cfg.ConfigFile)
+	if err != nil {
+		return fmt.Errorf("read config file: %w", err)
+	}
+
+	var fc fileConfig
+	if err := json.Unmarshal(data, &fc); err != nil {
+		return fmt.Errorf("parse config file %s: %w", cfg.ConfigFile, err)
+	}
+
+	applyString(fc.ServerAddr, "a", set, &cfg.ServerAddr)
+	applyString(fc.BaseURL, "b", set, &cfg.BaseURL)
+	applyString(fc.LogLevel, "l", set, &cfg.LogLevel)
+	applyString(fc.FileStoragePath, "f", set, &cfg.FileStoragePath)
+	applyString(fc.DatabaseDSN, "d", set, &cfg.DatabaseDSN)
+	applyString(fc.AuthSecret, "auth-secret", set, &cfg.AuthSecret)
+	applyString(fc.AuditFile, "audit-file", set, &cfg.AuditFile)
+	applyString(fc.AuditURL, "audit-url", set, &cfg.AuditURL)
+
+	if fc.EnableHTTPS != nil && !set["s"] {
+		cfg.EnableHTTPS = *fc.EnableHTTPS
+	}
+	return nil
+}
+
+func applyString(value *string, name string, set map[string]bool, dst *string) {
+	if value == nil || set[name] {
+		return
+	}
+	*dst = *value
 }
 
 // parseBool разбирает значение ENABLE_HTTPS. Переменная без значения включает
