@@ -155,27 +155,31 @@ func (h *Handler) ShortenBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	items := make([]storage.BatchItem, 0, len(req))
-	resp := make([]models.ShortenBatchResponseItem, 0, len(req))
-
 	for _, it := range req {
 		original := strings.TrimSpace(it.OriginalURL)
 		if original == "" {
 			http.Error(w, "empty url in batch", http.StatusBadRequest)
 			return
 		}
-		id := generateID(8)
-		items = append(items, storage.BatchItem{ID: id, URL: original})
-		resp = append(resp, models.ShortenBatchResponseItem{
-			CorrelationID: it.CorrelationID,
-			ShortURL:      h.baseURL + "/" + id,
-		})
+		items = append(items, storage.BatchItem{ID: generateID(8), URL: original})
 	}
 
 	userID, _ := auth.UserIDFromContext(r.Context())
-	if err := h.store.SaveBatch(r.Context(), items, userID); err != nil {
+	saved, err := h.store.SaveBatch(r.Context(), items, userID)
+	if err != nil {
 		h.log.Warn("save batch failed", zap.Error(err))
 		http.Error(w, "save failed", http.StatusInternalServerError)
 		return
+	}
+
+	// ответ собираем по сохранённым ссылкам: для адреса, который уже сокращали,
+	// хранилище возвращает выданную ранее ссылку, а не сгенерированную сейчас
+	resp := make([]models.ShortenBatchResponseItem, 0, len(saved))
+	for i, it := range saved {
+		resp = append(resp, models.ShortenBatchResponseItem{
+			CorrelationID: req[i].CorrelationID,
+			ShortURL:      h.baseURL + "/" + it.ID,
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")

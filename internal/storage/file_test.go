@@ -52,6 +52,41 @@ func TestFileStorageDeletePersists(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrDeleted))
 }
 
+func TestFileStorageSaveBatchPersistsOnlyNewURLs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "urls.json")
+	ctx := context.Background()
+
+	first, err := NewFileStorage(path, zap.NewNop())
+	require.NoError(t, err)
+	require.NoError(t, first.Save(ctx, "old1", "https://example.com/1", "user1"))
+
+	saved, err := first.SaveBatch(ctx, []BatchItem{
+		{ID: "new1", URL: "https://example.com/1"},
+		{ID: "new2", URL: "https://example.com/2"},
+		{ID: "new3", URL: "https://example.com/2"},
+	}, "user1")
+	require.NoError(t, err)
+	require.Len(t, saved, 3)
+	assert.Equal(t, "old1", saved[0].ID)
+	assert.Equal(t, "new2", saved[1].ID)
+	assert.Equal(t, "new2", saved[2].ID)
+	require.NoError(t, first.Close())
+
+	second, err := NewFileStorage(path, zap.NewNop())
+	require.NoError(t, err)
+	defer second.Close()
+
+	// после перезапуска резолвятся ровно те ссылки, что были в ответе
+	for _, it := range saved {
+		got, getErr := second.Get(ctx, it.ID)
+		require.NoError(t, getErr, "ссылка %s должна пережить перезапуск", it.ID)
+		assert.Equal(t, it.URL, got)
+	}
+
+	_, err = second.Get(ctx, "new1")
+	assert.True(t, errors.Is(err, ErrNotFound), "запись про уже известный адрес в файл не пишется")
+}
+
 func TestFileStorageEmptyFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "empty.json")
 

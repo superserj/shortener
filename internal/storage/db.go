@@ -83,15 +83,31 @@ func (s *DBStorage) Save(ctx context.Context, id, url, userID string) error {
 	return &ConflictError{ShortURL: stored}
 }
 
-// SaveBatch сохраняет пачку ссылок одной транзакцией.
-func (s *DBStorage) SaveBatch(ctx context.Context, items []BatchItem, userID string) error {
+// SaveBatch сохраняет пачку ссылок одним запросом и возвращает ссылки, под
+// которыми адреса лежат в базе. Для уже известного адреса это выданная ранее
+// короткая ссылка: DO NOTHING не отдаёт конфликтную строку в RETURNING, поэтому
+// на конфликте делается холостое обновление original_url.
+func (s *DBStorage) SaveBatch(ctx context.Context, items []BatchItem, userID string) ([]BatchItem, error) {
 	if len(items) == 0 {
-		return nil
+		return nil, nil
 	}
-	placeholders := make([]string, 0, len(items))
-	args := make([]interface{}, 0, 3*len(items))
+
+	// повторы внутри пачки нужно отсеять: ON CONFLICT DO UPDATE не может дважды
+	// затронуть одну и ту же строку в одном запросе
+	unique := make([]BatchItem, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, it := range items {
+		if _, ok := seen[it.URL]; ok {
+			continue
+		}
+		seen[it.URL] = struct{}{}
+		unique = append(unique, it)
+	}
+
+	placeholders := make([]string, 0, len(unique))
+	args := make([]interface{}, 0, 3*len(unique))
 	user := nullableUserID(userID)
-	for i, it := range items {
+	for i, it := range unique {
 		base := 3 * i
 		placeholders = append(placeholders,
 			"($"+strconv.Itoa(base+1)+", $"+strconv.Itoa(base+2)+", $"+strconv.Itoa(base+3)+")")
@@ -99,9 +115,36 @@ func (s *DBStorage) SaveBatch(ctx context.Context, items []BatchItem, userID str
 	}
 	query := "INSERT INTO short_urls (short_url, original_url, user_id) VALUES " +
 		strings.Join(placeholders, ", ") +
-		" ON CONFLICT (original_url) DO NOTHING"
-	_, err := s.pool.Exec(ctx, query, args...)
-	return err
+		" ON CONFLICT (original_url) DO UPDATE SET original_url = EXCLUDED.original_url" +
+		" RETURNING short_url, original_url"
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	stored := make(map[string]string, len(unique))
+	for rows.Next() {
+		var short, original string
+		if err := rows.Scan(&short, &original); err != nil {
+			return nil, err
+		}
+		stored[original] = short
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	saved := make([]BatchItem, 0, len(items))
+	for _, it := range items {
+		short, ok := stored[it.URL]
+		if !ok {
+			short = it.ID
+		}
+		saved = append(saved, BatchItem{ID: short, URL: it.URL})
+	}
+	return saved, nil
 }
 
 // Get возвращает оригинальный адрес по короткой ссылке. Для удалённой ссылки
