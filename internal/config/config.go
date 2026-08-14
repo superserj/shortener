@@ -75,6 +75,11 @@ func parse(name string, args []string, lookupEnv func(string) (string, bool)) (*
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
+	// -s стал переключателем, а не строкой с секретом: аргумент после него
+	// остановил бы разбор, и следующие флаги молча потерялись бы
+	if fs.NArg() > 0 {
+		return nil, fmt.Errorf("unexpected arguments: %v", fs.Args())
+	}
 
 	// set отмечает настройки, заданные флагом или переменной окружения:
 	// значения из файла конфигурации их не переопределяют
@@ -107,7 +112,9 @@ func parse(name string, args []string, lookupEnv func(string) (string, bool)) (*
 		cfg.EnableHTTPS = enabled
 		set["s"] = true
 	}
-	if v, ok := lookupEnv("CONFIG"); ok {
+	// пустое значение считаем незаданным, иначе объявленная в окружении, но
+	// пустая переменная отменила бы файл, указанный флагом
+	if v, ok := lookupEnv("CONFIG"); ok && v != "" {
 		cfg.ConfigFile = v
 	}
 
