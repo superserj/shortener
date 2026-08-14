@@ -172,6 +172,12 @@ func (h *Handler) ShortenBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(saved) != len(items) {
+		h.log.Warn("save batch returned unexpected length", zap.Int("want", len(items)), zap.Int("got", len(saved)))
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+
 	// ответ собираем по сохранённым ссылкам: для адреса, который уже сокращали,
 	// хранилище возвращает выданную ранее ссылку, а не сгенерированную сейчас
 	resp := make([]models.ShortenBatchResponseItem, 0, len(saved))

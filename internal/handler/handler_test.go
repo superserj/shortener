@@ -242,6 +242,9 @@ func TestShortenBatchReturnsExistingShortURL(t *testing.T) {
 	require.NoError(t, json.NewDecoder(res.Body).Decode(&items))
 	require.Len(t, items, 3)
 
+	assert.Equal(t, []string{"a", "b", "c"},
+		[]string{items[0].CorrelationID, items[1].CorrelationID, items[2].CorrelationID},
+		"correlation_id остаётся привязанным к своему адресу")
 	assert.Equal(t, "http://localhost:8080/known123", items[0].ShortURL,
 		"для известного адреса возвращается выданная ранее ссылка")
 	assert.Equal(t, items[1].ShortURL, items[2].ShortURL,

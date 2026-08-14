@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -83,17 +84,17 @@ func (s *DBStorage) Save(ctx context.Context, id, url, userID string) error {
 	return &ConflictError{ShortURL: stored}
 }
 
-// SaveBatch сохраняет пачку ссылок одним запросом и возвращает ссылки, под
-// которыми адреса лежат в базе. Для уже известного адреса это выданная ранее
-// короткая ссылка: DO NOTHING не отдаёт конфликтную строку в RETURNING, поэтому
-// на конфликте делается холостое обновление original_url.
+// SaveBatch сохраняет пачку ссылок и возвращает ссылки, под которыми адреса
+// лежат в базе. Для уже известного адреса это выданная ранее короткая ссылка:
+// конфликтующие строки RETURNING не отдаёт, поэтому их адреса добираются
+// отдельным запросом — так вставка не берёт блокировки на чужих строках.
 func (s *DBStorage) SaveBatch(ctx context.Context, items []BatchItem, userID string) ([]BatchItem, error) {
 	if len(items) == 0 {
 		return nil, nil
 	}
 
-	// повторы внутри пачки нужно отсеять: ON CONFLICT DO UPDATE не может дважды
-	// затронуть одну и ту же строку в одном запросе
+	// повторы внутри пачки отсеиваем: вставлять один адрес дважды в одном
+	// запросе бессмысленно, а ссылку для повтора всё равно вернёт общий разбор
 	unique := make([]BatchItem, 0, len(items))
 	seen := make(map[string]struct{}, len(items))
 	for _, it := range items {
@@ -105,7 +106,7 @@ func (s *DBStorage) SaveBatch(ctx context.Context, items []BatchItem, userID str
 	}
 
 	placeholders := make([]string, 0, len(unique))
-	args := make([]interface{}, 0, 3*len(unique))
+	args := make([]any, 0, 3*len(unique))
 	user := nullableUserID(userID)
 	for i, it := range unique {
 		base := 3 * i
@@ -115,36 +116,56 @@ func (s *DBStorage) SaveBatch(ctx context.Context, items []BatchItem, userID str
 	}
 	query := "INSERT INTO short_urls (short_url, original_url, user_id) VALUES " +
 		strings.Join(placeholders, ", ") +
-		" ON CONFLICT (original_url) DO UPDATE SET original_url = EXCLUDED.original_url" +
-		" RETURNING short_url, original_url"
-
-	rows, err := s.pool.Query(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+		" ON CONFLICT (original_url) DO NOTHING RETURNING short_url, original_url"
 
 	stored := make(map[string]string, len(unique))
-	for rows.Next() {
-		var short, original string
-		if err := rows.Scan(&short, &original); err != nil {
+	if err := s.collectShortURLs(ctx, stored, query, args...); err != nil {
+		return nil, err
+	}
+
+	// адреса, на которых вставка споткнулась о конфликт, в RETURNING не попали:
+	// их короткие ссылки читаем из базы
+	known := make([]string, 0, len(unique))
+	for _, it := range unique {
+		if _, ok := stored[it.URL]; !ok {
+			known = append(known, it.URL)
+		}
+	}
+	if len(known) > 0 {
+		if err := s.collectShortURLs(ctx, stored,
+			`SELECT short_url, original_url FROM short_urls WHERE original_url = ANY($1)`, known); err != nil {
 			return nil, err
 		}
-		stored[original] = short
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 
 	saved := make([]BatchItem, 0, len(items))
 	for _, it := range items {
 		short, ok := stored[it.URL]
 		if !ok {
-			short = it.ID
+			return nil, fmt.Errorf("short url for %s is missing after batch insert", it.URL)
 		}
 		saved = append(saved, BatchItem{ID: short, URL: it.URL})
 	}
 	return saved, nil
+}
+
+// collectShortURLs выполняет запрос, возвращающий пары «короткая ссылка —
+// оригинальный адрес», и складывает их в dst.
+func (s *DBStorage) collectShortURLs(ctx context.Context, dst map[string]string, query string, args ...any) error {
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var short, original string
+		if err := rows.Scan(&short, &original); err != nil {
+			return err
+		}
+		dst[original] = short
+	}
+	return rows.Err()
 }
 
 // Get возвращает оригинальный адрес по короткой ссылке. Для удалённой ссылки
@@ -207,7 +228,7 @@ func (s *DBStorage) MarkDeleted(ctx context.Context, userID string, ids []string
 	return err
 }
 
-func nullableUserID(userID string) interface{} {
+func nullableUserID(userID string) any {
 	if userID == "" {
 		return nil
 	}
