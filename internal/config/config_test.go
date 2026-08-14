@@ -124,6 +124,17 @@ func TestParseConfigFile(t *testing.T) {
 	assert.True(t, cfg.EnableHTTPS)
 }
 
+func TestParseConfigFileKeepsPlainBaseURL(t *testing.T) {
+	path := writeConfig(t, `{"base_url": "http://localhost:8080", "enable_https": true}`)
+
+	cfg, err := parse("shortener", []string{"-c", path}, noEnv)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.EnableHTTPS)
+	assert.Equal(t, "http://localhost:8080", cfg.BaseURL,
+		"адрес, заданный в файле, сильнее умолчания и на https не заменяется")
+}
+
 func TestParseConfigFileLongFlag(t *testing.T) {
 	path := writeConfig(t, `{"server_address": ":8082"}`)
 

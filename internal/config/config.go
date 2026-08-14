@@ -154,15 +154,19 @@ func applyFile(cfg *Config, set map[string]bool) error {
 
 	if fc.EnableHTTPS != nil && !set["s"] {
 		cfg.EnableHTTPS = *fc.EnableHTTPS
+		set["s"] = true
 	}
 	return nil
 }
 
+// applyString переносит значение из файла и отмечает настройку заданной:
+// значение из файла сильнее умолчания, и подменять его дальше нельзя.
 func applyString(value *string, name string, set map[string]bool, dst *string) {
 	if value == nil || set[name] {
 		return
 	}
 	*dst = *value
+	set[name] = true
 }
 
 // parseBool разбирает значение ENABLE_HTTPS. Переменная без значения включает
