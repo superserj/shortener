@@ -15,7 +15,7 @@ import (
 )
 
 func TestSelfSignedFields(t *testing.T) {
-	certPEM, keyPEM, err := SelfSigned("short.test")
+	certPEM, keyPEM, err := selfSigned("short.test")
 	require.NoError(t, err)
 
 	block, _ := pem.Decode(certPEM)
@@ -45,7 +45,7 @@ func TestSelfSignedFields(t *testing.T) {
 }
 
 func TestSelfSignedAcceptsIPHost(t *testing.T) {
-	certPEM, _, err := SelfSigned("192.168.0.1")
+	certPEM, _, err := selfSigned("192.168.0.1")
 	require.NoError(t, err)
 
 	block, _ := pem.Decode(certPEM)

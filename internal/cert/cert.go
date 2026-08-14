@@ -24,16 +24,19 @@ const (
 	validity = 365 * 24 * time.Hour
 	// serialBits — разрядность случайного серийного номера.
 	serialBits = 128
+	// clockSkew — запас на расхождение часов клиента и сервера: без него
+	// свежевыпущенный сертификат отвергается как «ещё не действительный».
+	clockSkew = time.Hour
 
 	certBlockType = "CERTIFICATE"
 	keyBlockType  = "RSA PRIVATE KEY"
 )
 
-// SelfSigned выпускает сертификат и закрытый ключ в формате PEM. В сертификат
+// selfSigned выпускает сертификат и закрытый ключ в формате PEM. В сертификат
 // попадают переданные имена хостов, адреса добавляются в список IP, а имена —
 // в список доменов. Адрес обратной петли добавляется всегда, иначе клиент не
 // сможет проверить сертификат при обращении на localhost.
-func SelfSigned(hosts ...string) (certPEM, keyPEM []byte, err error) {
+func selfSigned(hosts ...string) (certPEM, keyPEM []byte, err error) {
 	key, err := rsa.GenerateKey(rand.Reader, keyBits)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate key: %w", err)
@@ -51,7 +54,7 @@ func SelfSigned(hosts ...string) (certPEM, keyPEM []byte, err error) {
 			Organization: []string{"Shortener"},
 			Country:      []string{"RU"},
 		},
-		NotBefore:             now,
+		NotBefore:             now.Add(-clockSkew),
 		NotAfter:              now.Add(validity),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
@@ -72,7 +75,7 @@ func SelfSigned(hosts ...string) (certPEM, keyPEM []byte, err error) {
 // Certificate выпускает самоподписанный сертификат и сразу разбирает его в вид,
 // пригодный для tls.Config.
 func Certificate(hosts ...string) (tls.Certificate, error) {
-	certPEM, keyPEM, err := SelfSigned(hosts...)
+	certPEM, keyPEM, err := selfSigned(hosts...)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
