@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"flag"
 	"log"
 	"net"
 	"net/http"
@@ -55,6 +56,9 @@ func main() {
 
 	cfg, err := config.New()
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
 		log.Fatal(err)
 	}
 
@@ -63,6 +67,16 @@ func main() {
 		log.Fatal(err)
 	}
 	defer func() { _ = lg.Sync() }()
+
+	// TLS готовим до подъёма хранилища и фоновых воркеров: выход по ошибке
+	// на этом шаге не должен обрывать уже запущенные компоненты
+	var tlsConfig *tls.Config
+	if cfg.EnableHTTPS {
+		tlsConfig, err = newTLSConfig(cfg.ServerAddr)
+		if err != nil {
+			lg.Fatal("init tls", zap.Error(err))
+		}
+	}
 
 	store, err := newStore(context.Background(), cfg.DatabaseDSN, cfg.FileStoragePath, lg.With(zap.String("component", "storage")))
 	if err != nil {
@@ -99,14 +113,7 @@ func main() {
 	h := handler.New(store, cfg.BaseURL, pinger, del, aud, lg.With(zap.String("component", "handler")))
 	a := auth.New(cfg.AuthSecret)
 
-	srv := &http.Server{Addr: cfg.ServerAddr, Handler: newRouter(h, a, lg)}
-	if cfg.EnableHTTPS {
-		tlsConfig, err := newTLSConfig(cfg.ServerAddr)
-		if err != nil {
-			lg.Fatal("init tls", zap.Error(err))
-		}
-		srv.TLSConfig = tlsConfig
-	}
+	srv := &http.Server{Addr: cfg.ServerAddr, Handler: newRouter(h, a, lg), TLSConfig: tlsConfig}
 
 	go func() {
 		lg.Info("starting server", zap.String("addr", cfg.ServerAddr), zap.Bool("https", cfg.EnableHTTPS))
@@ -115,9 +122,10 @@ func main() {
 		}
 	}()
 
+	pprofSrv := &http.Server{Addr: pprofAddr}
 	go func() {
 		lg.Info("starting pprof server", zap.String("addr", pprofAddr))
-		if err := http.ListenAndServe(pprofAddr, nil); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := pprofSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			lg.Error("pprof listen and serve", zap.Error(err))
 		}
 	}()
@@ -125,12 +133,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
 	<-ctx.Done()
+	// возвращаем сигналам поведение по умолчанию: повторный сигнал во время
+	// остановки должен прерывать процесс, а не теряться
+	stop()
 	lg.Info("shutting down")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		lg.Error("server shutdown", zap.Error(err))
+	}
+	if err := pprofSrv.Shutdown(shutdownCtx); err != nil {
+		lg.Error("pprof server shutdown", zap.Error(err))
 	}
 
 	delCancel()
