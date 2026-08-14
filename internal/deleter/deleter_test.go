@@ -2,7 +2,6 @@ package deleter
 
 import (
 	"context"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -13,10 +12,6 @@ import (
 
 	"github.com/superserj/shortener/internal/storage"
 )
-
-func TestMain(m *testing.M) {
-	os.Exit(m.Run())
-}
 
 type spyStore struct {
 	*storage.MemStorage

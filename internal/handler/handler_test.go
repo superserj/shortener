@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
@@ -20,10 +19,6 @@ import (
 	"github.com/superserj/shortener/internal/models"
 	"github.com/superserj/shortener/internal/storage"
 )
-
-func TestMain(m *testing.M) {
-	os.Exit(m.Run())
-}
 
 type noopDeleter struct{}
 

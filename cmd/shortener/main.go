@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -47,6 +48,8 @@ func newRouter(h *handler.Handler, a *auth.Authenticator, log *zap.Logger) chi.R
 }
 
 func main() {
+	printBuildInfo(os.Stdout)
+
 	cfg := config.New()
 
 	lg, err := logger.New(cfg.LogLevel)
