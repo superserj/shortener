@@ -88,6 +88,21 @@ func TestParseEnableHTTPS(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestParseHTTPSSwitchesDefaultBaseURL(t *testing.T) {
+	cfg, err := parse("shortener", []string{"-s"}, noEnv)
+	require.NoError(t, err)
+	assert.Equal(t, "https://localhost:8080", cfg.BaseURL,
+		"ссылки должны указывать на тот же протокол, по которому отвечает сервис")
+
+	cfg, err = parse("shortener", []string{"-s", "-b", "http://short.test"}, noEnv)
+	require.NoError(t, err)
+	assert.Equal(t, "http://short.test", cfg.BaseURL, "явно заданный адрес не трогаем")
+
+	cfg, err = parse("shortener", nil, noEnv)
+	require.NoError(t, err)
+	assert.Equal(t, "http://localhost:8080", cfg.BaseURL)
+}
+
 func TestParseConfigFile(t *testing.T) {
 	path := writeConfig(t, `{
 		"server_address": ":8081",

@@ -77,7 +77,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 				http.Error(w, "failed to issue user id", http.StatusInternalServerError)
 				return
 			}
-			http.SetCookie(w, a.makeCookie(userID))
+			http.SetCookie(w, a.makeCookie(userID, r.TLS != nil))
 			ctx = WithUserID(ctx, userID)
 		case err != nil:
 			http.Error(w, "failed to read cookie", http.StatusBadRequest)
@@ -104,13 +104,17 @@ func WithCookieInvalid(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxCookieInvalid, true)
 }
 
-func (a *Authenticator) makeCookie(userID string) *http.Cookie {
+// makeCookie собирает куку с подписанным идентификатором. Признак secure
+// выставляется для соединения по TLS: иначе браузер отправит куку и по
+// открытому HTTP, а она даёт доступ к списку и удалению ссылок пользователя.
+func (a *Authenticator) makeCookie(userID string, secure bool) *http.Cookie {
 	return &http.Cookie{
 		Name:     cookieName,
 		Value:    a.Sign(userID),
 		Path:     "/",
 		MaxAge:   cookieMaxAge,
 		HttpOnly: true,
+		Secure:   secure,
 	}
 }
 

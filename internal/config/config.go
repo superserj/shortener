@@ -11,6 +11,14 @@ import (
 	"strconv"
 )
 
+const (
+	defaultServerAddr = "localhost:8080"
+	defaultBaseURL    = "http://localhost:8080"
+	// с включённым HTTPS адрес коротких ссылок по умолчанию тоже должен быть
+	// https, иначе сервис выдаёт ссылки, по которым сам не отвечает
+	defaultBaseURLTLS = "https://localhost:8080"
+)
+
 // Config — настройки сервиса.
 type Config struct {
 	ServerAddr      string
@@ -52,8 +60,8 @@ func parse(name string, args []string, lookupEnv func(string) (string, bool)) (*
 	cfg := &Config{}
 
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.StringVar(&cfg.ServerAddr, "a", "localhost:8080", "address to run HTTP server")
-	fs.StringVar(&cfg.BaseURL, "b", "http://localhost:8080", "base address for shortened URL")
+	fs.StringVar(&cfg.ServerAddr, "a", defaultServerAddr, "address to run HTTP server")
+	fs.StringVar(&cfg.BaseURL, "b", defaultBaseURL, "base address for shortened URL")
 	fs.StringVar(&cfg.LogLevel, "l", "info", "log level")
 	fs.StringVar(&cfg.FileStoragePath, "f", "/tmp/short-url-db.json", "path to file storage")
 	fs.StringVar(&cfg.DatabaseDSN, "d", "", "postgres DSN")
@@ -103,11 +111,14 @@ func parse(name string, args []string, lookupEnv func(string) (string, bool)) (*
 		cfg.ConfigFile = v
 	}
 
-	if cfg.ConfigFile == "" {
-		return cfg, nil
+	if cfg.ConfigFile != "" {
+		if err := applyFile(cfg, set); err != nil {
+			return nil, err
+		}
 	}
-	if err := applyFile(cfg, set); err != nil {
-		return nil, err
+
+	if cfg.EnableHTTPS && !set["b"] && cfg.BaseURL == defaultBaseURL {
+		cfg.BaseURL = defaultBaseURLTLS
 	}
 	return cfg, nil
 }
