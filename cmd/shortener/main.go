@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -34,6 +35,9 @@ const (
 	// отдельном сервере и только на локальном интерфейсе: наружу профили
 	// с содержимым кучи отдавать нельзя
 	pprofAddr = "localhost:6060"
+	// errMissingPort — текст ошибки net.SplitHostPort для адреса, в котором
+	// нет порта: единственный случай, когда адрес можно принять как есть
+	errMissingPort = "missing port in address"
 )
 
 func newRouter(h *handler.Handler, a *auth.Authenticator, log *zap.Logger) chi.Router {
@@ -168,7 +172,13 @@ func serve(srv *http.Server, enableHTTPS bool) error {
 func newTLSConfig(addr string) (*tls.Config, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		// адрес без порта считаем именем хоста
+		// адрес без порта считаем именем хоста, а вот разбитый адрес молча
+		// принимать нельзя: сертификат выпишется на мусорное имя, и проверка
+		// у клиента упадёт уже во время работы
+		var addrErr *net.AddrError
+		if !errors.As(err, &addrErr) || addrErr.Err != errMissingPort {
+			return nil, fmt.Errorf("parse server address %q: %w", addr, err)
+		}
 		host = addr
 	}
 

@@ -65,6 +65,9 @@ func TestNewTLSConfig(t *testing.T) {
 	cfg, err = newTLSConfig("localhost")
 	require.NoError(t, err, "адрес без порта считается именем хоста")
 	assert.Len(t, cfg.Certificates, 1)
+
+	_, err = newTLSConfig("localhost:8080:9090")
+	assert.Error(t, err, "разбитый адрес не должен превращаться в имя хоста")
 }
 
 func TestServeStoppedServer(t *testing.T) {
