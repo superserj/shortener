@@ -2,7 +2,10 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -85,6 +88,40 @@ func TestFileStorageSaveBatchPersistsOnlyNewURLs(t *testing.T) {
 
 	_, err = second.Get(ctx, "new1")
 	assert.True(t, errors.Is(err, ErrNotFound), "запись про уже известный адрес в файл не пишется")
+}
+
+func TestFileStorageNumbersRecordsConsecutively(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "urls.json")
+	ctx := context.Background()
+
+	s, err := NewFileStorage(path, zap.NewNop())
+	require.NoError(t, err)
+	require.NoError(t, s.Save(ctx, "id1", "https://example.com/1", "user1"))
+
+	_, err = s.SaveBatch(ctx, []BatchItem{
+		{ID: "id2", URL: "https://example.com/2"},
+		{ID: "id3", URL: "https://example.com/1"}, // адрес уже известен, в файл не попадёт
+		{ID: "id4", URL: "https://example.com/3"},
+	}, "user1")
+	require.NoError(t, err)
+	require.NoError(t, s.Save(ctx, "id5", "https://example.com/4", "user1"))
+	require.NoError(t, s.Close())
+
+	f, err := os.Open(path)
+	require.NoError(t, err)
+	defer f.Close()
+
+	var uuids []string
+	dec := json.NewDecoder(f)
+	for {
+		var rec Record
+		if decErr := dec.Decode(&rec); decErr != nil {
+			require.True(t, errors.Is(decErr, io.EOF))
+			break
+		}
+		uuids = append(uuids, rec.UUID)
+	}
+	assert.Equal(t, []string{"1", "2", "3", "4"}, uuids, "номера записей идут подряд и без пропусков")
 }
 
 func TestFileStorageEmptyFile(t *testing.T) {

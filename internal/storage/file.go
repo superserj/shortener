@@ -104,8 +104,11 @@ func (s *FileStorage) Save(ctx context.Context, id, url, userID string) error {
 		s.log.Warn("failed to persist record", zap.Error(err))
 		return err
 	}
+	if err := s.mem.Save(ctx, id, url, userID); err != nil {
+		return err
+	}
 	s.nextID++
-	return s.mem.Save(ctx, id, url, userID)
+	return nil
 }
 
 // SaveBatch сохраняет пачку ссылок одной записью в файл. В файл попадают только
@@ -153,10 +156,12 @@ func (s *FileStorage) SaveBatch(ctx context.Context, items []BatchItem, userID s
 			return nil, err
 		}
 	}
-	s.nextID += len(fresh)
 	if _, err := s.mem.SaveBatch(ctx, fresh, userID); err != nil {
 		return nil, err
 	}
+	// счётчик двигаем последним: пока пачка не принята целиком, нумерация
+	// уходит вперёд от того, что хранилище готово отдавать
+	s.nextID += len(fresh)
 	return saved, nil
 }
 
