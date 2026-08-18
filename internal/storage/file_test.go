@@ -134,3 +134,19 @@ func TestFileStorageEmptyFile(t *testing.T) {
 	_, err = s.Get(context.Background(), "anything")
 	assert.True(t, errors.Is(err, ErrNotFound))
 }
+
+func TestFileStorageStats(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "urls.json")
+
+	s, err := NewFileStorage(path, zap.NewNop())
+	require.NoError(t, err)
+	defer s.Close()
+
+	require.NoError(t, s.Save(ctx, "id1", "https://example.com/1", "user1"))
+	require.NoError(t, s.Save(ctx, "id2", "https://example.com/2", "user2"))
+
+	stats, err := s.Stats(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, Stats{URLs: 2, Users: 2}, stats)
+}

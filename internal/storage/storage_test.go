@@ -65,3 +65,29 @@ func TestMemStorageSaveBatchKeepsOwner(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, urls)
 }
+
+func TestMemStorageStats(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemStorage()
+
+	stats, err := s.Stats(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, Stats{}, stats, "пустое хранилище отдаёт нули")
+
+	require.NoError(t, s.Save(ctx, "id1", "https://example.com/1", "user1"))
+	require.NoError(t, s.Save(ctx, "id2", "https://example.com/2", "user1"))
+	require.NoError(t, s.Save(ctx, "id3", "https://example.com/3", "user2"))
+	require.NoError(t, s.Save(ctx, "id4", "https://example.com/4", ""))
+
+	stats, err = s.Stats(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 4, stats.URLs)
+	assert.Equal(t, 2, stats.Users, "ссылка без пользователя счётчик не увеличивает")
+
+	require.NoError(t, s.MarkDeleted(ctx, "user2", []string{"id3"}))
+
+	stats, err = s.Stats(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 3, stats.URLs, "удалённая ссылка выпадает из статистики")
+	assert.Equal(t, 1, stats.Users, "вместе с ней выпадает и её единственный владелец")
+}

@@ -39,6 +39,15 @@ type UserURL struct {
 	OriginalURL string
 }
 
+// Stats — сводка по сервису. Удалённые ссылки в неё не попадают: сервис их
+// больше не обслуживает, поэтому в статистике доступных ссылок им не место.
+type Stats struct {
+	// URLs — количество сокращённых адресов.
+	URLs int
+	// Users — количество пользователей, которые эти адреса сокращали.
+	Users int
+}
+
 // Repository — хранилище коротких ссылок.
 type Repository interface {
 	// Save сохраняет ссылку. Если адрес уже сокращали, возвращает ConflictError.
@@ -55,6 +64,8 @@ type Repository interface {
 	ListByUser(ctx context.Context, userID string) ([]UserURL, error)
 	// MarkDeleted помечает ссылки пользователя удалёнными.
 	MarkDeleted(ctx context.Context, userID string, ids []string) error
+	// Stats возвращает количество ссылок и пользователей в хранилище.
+	Stats(ctx context.Context) (Stats, error)
 }
 
 type record struct {
@@ -163,6 +174,27 @@ func (s *MemStorage) ListByUser(_ context.Context, userID string) ([]UserURL, er
 		}
 	}
 	return result, nil
+}
+
+// Stats считает доступные ссылки и пользователей, которым они принадлежат.
+// Ссылки без пользователя в счётчик пользователей не идут.
+func (s *MemStorage) Stats(_ context.Context) (Stats, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var stats Stats
+	users := make(map[string]struct{}, len(s.urls))
+	for _, rec := range s.urls {
+		if rec.deleted {
+			continue
+		}
+		stats.URLs++
+		if rec.userID != "" {
+			users[rec.userID] = struct{}{}
+		}
+	}
+	stats.Users = len(users)
+	return stats, nil
 }
 
 // MarkDeleted помечает удалёнными ссылки, принадлежащие пользователю. Чужие
