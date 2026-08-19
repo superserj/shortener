@@ -199,3 +199,30 @@ func TestParseUnknownFlag(t *testing.T) {
 	_, err := parse("shortener", []string{"-unknown"}, noEnv)
 	assert.Error(t, err)
 }
+
+func TestParseTrustedSubnet(t *testing.T) {
+	cfg, err := parse("shortener", nil, noEnv)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.TrustedSubnet, "по умолчанию доверенной подсети нет")
+
+	cfg, err = parse("shortener", []string{"-t", "192.168.1.0/24"}, noEnv)
+	require.NoError(t, err)
+	assert.Equal(t, "192.168.1.0/24", cfg.TrustedSubnet)
+
+	cfg, err = parse("shortener", []string{"-t", "192.168.1.0/24"},
+		envMap(map[string]string{"TRUSTED_SUBNET": "10.0.0.0/8"}))
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.0/8", cfg.TrustedSubnet, "переменная окружения сильнее флага")
+}
+
+func TestParseTrustedSubnetFromFile(t *testing.T) {
+	path := writeConfig(t, `{"trusted_subnet": "172.16.0.0/12"}`)
+
+	cfg, err := parse("shortener", []string{"-c", path}, noEnv)
+	require.NoError(t, err)
+	assert.Equal(t, "172.16.0.0/12", cfg.TrustedSubnet)
+
+	cfg, err = parse("shortener", []string{"-c", path, "-t", "192.168.1.0/24"}, noEnv)
+	require.NoError(t, err)
+	assert.Equal(t, "192.168.1.0/24", cfg.TrustedSubnet, "флаг сильнее файла")
+}

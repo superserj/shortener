@@ -29,6 +29,7 @@ type Config struct {
 	AuthSecret      string
 	AuditFile       string
 	AuditURL        string
+	TrustedSubnet   string
 	EnableHTTPS     bool
 	ConfigFile      string
 }
@@ -45,6 +46,7 @@ type fileConfig struct {
 	AuthSecret      *string `json:"auth_secret"`
 	AuditFile       *string `json:"audit_file"`
 	AuditURL        *string `json:"audit_url"`
+	TrustedSubnet   *string `json:"trusted_subnet"`
 	EnableHTTPS     *bool   `json:"enable_https"`
 }
 
@@ -69,6 +71,7 @@ func parse(name string, args []string, lookupEnv func(string) (string, bool)) (*
 	fs.StringVar(&cfg.AuthSecret, "auth-secret", "shortener-default-secret", "secret key for auth cookie signature")
 	fs.StringVar(&cfg.AuditFile, "audit-file", "", "path to audit log file, empty disables file audit")
 	fs.StringVar(&cfg.AuditURL, "audit-url", "", "url of remote audit sink, empty disables remote audit")
+	fs.StringVar(&cfg.TrustedSubnet, "t", "", "CIDR of the subnet allowed to read internal stats, empty forbids everyone")
 	fs.StringVar(&cfg.ConfigFile, "c", "", "path to JSON config file")
 	fs.StringVar(&cfg.ConfigFile, "config", "", "path to JSON config file, long form of -c")
 
@@ -103,6 +106,7 @@ func parse(name string, args []string, lookupEnv func(string) (string, bool)) (*
 	envString("AUTH_SECRET", "auth-secret", &cfg.AuthSecret)
 	envString("AUDIT_FILE", "audit-file", &cfg.AuditFile)
 	envString("AUDIT_URL", "audit-url", &cfg.AuditURL)
+	envString("TRUSTED_SUBNET", "t", &cfg.TrustedSubnet)
 
 	if v, ok := lookupEnv("ENABLE_HTTPS"); ok {
 		enabled, err := parseBool(v)
@@ -151,6 +155,7 @@ func applyFile(cfg *Config, set map[string]bool) error {
 	applyString(fc.AuthSecret, "auth-secret", set, &cfg.AuthSecret)
 	applyString(fc.AuditFile, "audit-file", set, &cfg.AuditFile)
 	applyString(fc.AuditURL, "audit-url", set, &cfg.AuditURL)
+	applyString(fc.TrustedSubnet, "t", set, &cfg.TrustedSubnet)
 
 	if fc.EnableHTTPS != nil && !set["s"] {
 		cfg.EnableHTTPS = *fc.EnableHTTPS
