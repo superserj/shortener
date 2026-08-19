@@ -40,7 +40,9 @@ const (
 	errMissingPort = "missing port in address"
 )
 
-func newRouter(h *handler.Handler, a *auth.Authenticator, log *zap.Logger) chi.Router {
+// newRouter собирает маршруты сервиса. Обработчик статистики закрыт отдельной
+// мидлварью: она пускает к нему только запросы из доверенной подсети.
+func newRouter(h *handler.Handler, a *auth.Authenticator, trusted func(http.Handler) http.Handler, log *zap.Logger) chi.Router {
 	r := chi.NewRouter()
 	r.Use(logger.WithLogging(log))
 	r.Use(middleware.Gzip)
@@ -50,6 +52,7 @@ func newRouter(h *handler.Handler, a *auth.Authenticator, log *zap.Logger) chi.R
 	r.Post("/api/shorten/batch", h.ShortenBatch)
 	r.Get("/api/user/urls", h.UserURLs)
 	r.Delete("/api/user/urls", h.DeleteUserURLs)
+	r.With(trusted).Get("/api/internal/stats", h.Stats)
 	r.Get("/ping", h.Ping)
 	r.Get("/{id}", h.Redirect)
 	return r
@@ -117,7 +120,12 @@ func main() {
 	h := handler.New(store, cfg.BaseURL, pinger, del, aud, lg.With(zap.String("component", "handler")))
 	a := auth.New(cfg.AuthSecret)
 
-	srv := &http.Server{Addr: cfg.ServerAddr, Handler: newRouter(h, a, lg), TLSConfig: tlsConfig}
+	trusted, err := middleware.TrustedSubnet(cfg.TrustedSubnet)
+	if err != nil {
+		lg.Fatal("init trusted subnet", zap.Error(err))
+	}
+
+	srv := &http.Server{Addr: cfg.ServerAddr, Handler: newRouter(h, a, trusted, lg), TLSConfig: tlsConfig}
 
 	go func() {
 		lg.Info("starting server", zap.String("addr", cfg.ServerAddr), zap.Bool("https", cfg.EnableHTTPS))

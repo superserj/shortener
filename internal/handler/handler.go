@@ -279,6 +279,22 @@ func (h *Handler) UserURLs(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// Stats обслуживает GET /api/internal/stats — отдаёт количество сокращённых
+// адресов и пользователей сервиса. Доступ к эндпоинту ограничен доверенной
+// подсетью, сам обработчик проверок не делает.
+func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.store.Stats(r.Context())
+	if err != nil {
+		h.log.Warn("stats failed", zap.Error(err))
+		http.Error(w, "stats failed", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(models.StatsResponse{URLs: stats.URLs, Users: stats.Users})
+}
+
 // DeleteUserURLs обслуживает DELETE /api/user/urls — принимает ссылки на
 // удаление и сразу отвечает 202, удаляя их в фоне.
 func (h *Handler) DeleteUserURLs(w http.ResponseWriter, r *http.Request) {

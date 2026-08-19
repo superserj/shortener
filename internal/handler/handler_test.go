@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,32 @@ import (
 type noopDeleter struct{}
 
 func (noopDeleter) Enqueue(_ string, _ []string) {}
+
+// failingStore подставляется вместо хранилища, чтобы проверить ответы на его
+// ошибки. Все методы отвечают одинаково — errStoreUnavailable.
+type failingStore struct{}
+
+var errStoreUnavailable = errors.New("storage unavailable")
+
+func (failingStore) Save(_ context.Context, _, _, _ string) error { return errStoreUnavailable }
+
+func (failingStore) SaveBatch(_ context.Context, _ []storage.BatchItem, _ string) ([]storage.BatchItem, error) {
+	return nil, errStoreUnavailable
+}
+
+func (failingStore) Get(_ context.Context, _ string) (string, error) { return "", errStoreUnavailable }
+
+func (failingStore) ListByUser(_ context.Context, _ string) ([]storage.UserURL, error) {
+	return nil, errStoreUnavailable
+}
+
+func (failingStore) MarkDeleted(_ context.Context, _ string, _ []string) error {
+	return errStoreUnavailable
+}
+
+func (failingStore) Stats(_ context.Context) (storage.Stats, error) {
+	return storage.Stats{}, errStoreUnavailable
+}
 
 type recordDeleter struct {
 	userID string
@@ -515,4 +542,34 @@ func TestNoAuditOnBatch(t *testing.T) {
 	require.Equal(t, http.StatusCreated, w.Result().StatusCode)
 
 	assert.Empty(t, rec.events, "батч в списке аудируемых хэндлеров не значится")
+}
+
+func TestStats(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemStorage()
+	require.NoError(t, store.Save(ctx, "id1", "https://example.com/1", "user1"))
+	require.NoError(t, store.Save(ctx, "id2", "https://example.com/2", "user2"))
+
+	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/stats", nil)
+	res := httptest.NewRecorder()
+	h.Stats(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+	assert.Equal(t, "application/json", res.Header().Get("Content-Type"))
+
+	var got models.StatsResponse
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&got))
+	assert.Equal(t, models.StatsResponse{URLs: 2, Users: 2}, got)
+}
+
+func TestStatsStorageFailure(t *testing.T) {
+	h := New(failingStore{}, "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/stats", nil)
+	res := httptest.NewRecorder()
+	h.Stats(res, req)
+
+	assert.Equal(t, http.StatusInternalServerError, res.Code)
 }

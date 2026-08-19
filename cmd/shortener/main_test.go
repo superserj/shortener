@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,8 @@ import (
 	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/config"
 	"github.com/superserj/shortener/internal/handler"
+	"github.com/superserj/shortener/internal/middleware"
+	"github.com/superserj/shortener/internal/models"
 	"github.com/superserj/shortener/internal/storage"
 )
 
@@ -82,7 +85,9 @@ func TestNewRouterRoutes(t *testing.T) {
 	store := storage.NewMemStorage()
 	log := zap.NewNop()
 	h := handler.New(store, "http://localhost:8080", nil, noopDeleter{}, nil, log)
-	r := newRouter(h, auth.New("test-secret"), log)
+	trusted, err := middleware.TrustedSubnet("")
+	require.NoError(t, err)
+	r := newRouter(h, auth.New("test-secret"), trusted, log)
 
 	srv := httptest.NewServer(r)
 	defer srv.Close()
@@ -106,4 +111,35 @@ func TestNewRouterRoutes(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, res.Body.Close())
 	assert.Equal(t, http.StatusInternalServerError, res.StatusCode, "без базы ping отвечает ошибкой")
+}
+
+func TestNewRouterStats(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemStorage()
+	require.NoError(t, store.Save(ctx, "id1", "https://practicum.yandex.ru/", "user1"))
+
+	log := zap.NewNop()
+	h := handler.New(store, "http://localhost:8080", nil, noopDeleter{}, nil, log)
+	trusted, err := middleware.TrustedSubnet("127.0.0.0/8")
+	require.NoError(t, err)
+
+	srv := httptest.NewServer(newRouter(h, auth.New("test-secret"), trusted, log))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/internal/stats", nil)
+	require.NoError(t, err)
+	res, err := srv.Client().Do(req)
+	require.NoError(t, err)
+	require.NoError(t, res.Body.Close())
+	assert.Equal(t, http.StatusForbidden, res.StatusCode, "без заголовка с адресом доступа нет")
+
+	req.Header.Set("X-Real-IP", "127.0.0.1")
+	res, err = srv.Client().Do(req)
+	require.NoError(t, err)
+	defer res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode)
+
+	var stats models.StatsResponse
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&stats))
+	assert.Equal(t, models.StatsResponse{URLs: 1, Users: 1}, stats)
 }
