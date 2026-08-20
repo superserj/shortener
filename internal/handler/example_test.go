@@ -14,6 +14,7 @@ import (
 
 	"github.com/superserj/shortener/internal/handler"
 	"github.com/superserj/shortener/internal/models"
+	"github.com/superserj/shortener/internal/service"
 	"github.com/superserj/shortener/internal/storage"
 )
 
@@ -26,7 +27,7 @@ func (noopDeleter) Enqueue(_ string, _ []string) {}
 // newServer поднимает сервис с хранилищем в памяти.
 func newServer() *httptest.Server {
 	store := storage.NewMemStorage()
-	h := handler.New(store, baseURL, nil, noopDeleter{}, nil, zap.NewNop())
+	h := handler.New(service.New(store, baseURL, nil), nil, noopDeleter{}, zap.NewNop())
 
 	r := chi.NewRouter()
 	r.Post("/", h.ShortenURL)
@@ -221,7 +222,7 @@ func ExampleNew() {
 		return
 	}
 
-	h := handler.New(store, baseURL, nil, noopDeleter{}, nil, zap.NewNop())
+	h := handler.New(service.New(store, baseURL, nil), nil, noopDeleter{}, zap.NewNop())
 
 	r := chi.NewRouter()
 	r.Get("/{id}", h.Redirect)

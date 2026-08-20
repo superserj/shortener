@@ -1,4 +1,5 @@
-// Пакет handler содержит HTTP-обработчики сервиса сокращения ссылок.
+// Пакет handler содержит HTTP-обработчики сервиса сокращения ссылок. Сама
+// логика работы со ссылками живёт в пакете service, общем для HTTP и gRPC.
 package handler
 
 import (
@@ -6,26 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"math/rand"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
-	"github.com/superserj/shortener/internal/audit"
 	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/models"
+	"github.com/superserj/shortener/internal/service"
 	"github.com/superserj/shortener/internal/storage"
-)
-
-const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
-var (
-	rngMu sync.Mutex
-	rng   = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
 
 // DeleteEnqueuer принимает короткие ссылки на асинхронное удаление.
@@ -38,30 +30,21 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
-// AuditNotifier принимает события аудита обработанных запросов.
-type AuditNotifier interface {
-	Notify(e audit.Event)
-}
-
 // Handler обслуживает эндпоинты сервиса.
 type Handler struct {
-	store   storage.Repository
-	baseURL string
+	svc     *service.Service
 	pinger  Pinger
 	deleter DeleteEnqueuer
-	auditor AuditNotifier
 	log     *zap.Logger
 }
 
-// New создаёт обработчик. Логгер передаётся явно. Аргументы pinger и auditor
-// могут быть nil: тогда эндпоинт проверки БД отвечает ошибкой, а аудит не ведётся.
-func New(store storage.Repository, baseURL string, pinger Pinger, deleter DeleteEnqueuer, auditor AuditNotifier, log *zap.Logger) *Handler {
+// New создаёт обработчик. Логгер передаётся явно. Аргумент pinger может быть
+// nil: тогда эндпоинт проверки БД отвечает ошибкой.
+func New(svc *service.Service, pinger Pinger, deleter DeleteEnqueuer, log *zap.Logger) *Handler {
 	return &Handler{
-		store:   store,
-		baseURL: baseURL,
+		svc:     svc,
 		pinger:  pinger,
 		deleter: deleter,
-		auditor: auditor,
 		log:     log,
 	}
 }
@@ -83,25 +66,16 @@ func (h *Handler) ShortenURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID, _ := auth.UserIDFromContext(r.Context())
-	id := generateID(8)
-	status := http.StatusCreated
-	if err := h.store.Save(r.Context(), id, originalURL, userID); err != nil {
-		var conflict *storage.ConflictError
-		if errors.As(err, &conflict) {
-			id = conflict.ShortURL
-			status = http.StatusConflict
-		} else {
-			h.log.Warn("save failed", zap.Error(err))
-			http.Error(w, "save failed", http.StatusInternalServerError)
-			return
-		}
+	shortURL, conflict, err := h.svc.Shorten(r.Context(), originalURL, userID)
+	if err != nil {
+		h.log.Warn("save failed", zap.Error(err))
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
 	}
 
-	h.notifyAudit(r, audit.ActionShorten, originalURL)
-
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(status)
-	w.Write([]byte(h.baseURL + "/" + id))
+	w.WriteHeader(shortenStatus(conflict))
+	w.Write([]byte(shortURL))
 }
 
 // ShortenAPI обслуживает POST /api/shorten — то же, что ShortenURL, но принимает
@@ -120,25 +94,16 @@ func (h *Handler) ShortenAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID, _ := auth.UserIDFromContext(r.Context())
-	id := generateID(8)
-	status := http.StatusCreated
-	if err := h.store.Save(r.Context(), id, originalURL, userID); err != nil {
-		var conflict *storage.ConflictError
-		if errors.As(err, &conflict) {
-			id = conflict.ShortURL
-			status = http.StatusConflict
-		} else {
-			h.log.Warn("save failed", zap.Error(err))
-			http.Error(w, "save failed", http.StatusInternalServerError)
-			return
-		}
+	shortURL, conflict, err := h.svc.Shorten(r.Context(), originalURL, userID)
+	if err != nil {
+		h.log.Warn("save failed", zap.Error(err))
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
 	}
 
-	h.notifyAudit(r, audit.ActionShorten, originalURL)
-
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(models.ShortenResponse{Result: h.baseURL + "/" + id})
+	w.WriteHeader(shortenStatus(conflict))
+	json.NewEncoder(w).Encode(models.ShortenResponse{Result: shortURL})
 }
 
 // ShortenBatch обслуживает POST /api/shorten/batch — сокращает пачку адресов
@@ -154,37 +119,31 @@ func (h *Handler) ShortenBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := make([]storage.BatchItem, 0, len(req))
+	urls := make([]string, 0, len(req))
 	for _, it := range req {
 		original := strings.TrimSpace(it.OriginalURL)
 		if original == "" {
 			http.Error(w, "empty url in batch", http.StatusBadRequest)
 			return
 		}
-		items = append(items, storage.BatchItem{ID: generateID(8), URL: original})
+		urls = append(urls, original)
 	}
 
 	userID, _ := auth.UserIDFromContext(r.Context())
-	saved, err := h.store.SaveBatch(r.Context(), items, userID)
+	shortURLs, err := h.svc.ShortenBatch(r.Context(), urls, userID)
 	if err != nil {
 		h.log.Warn("save batch failed", zap.Error(err))
 		http.Error(w, "save failed", http.StatusInternalServerError)
 		return
 	}
 
-	if len(saved) != len(items) {
-		h.log.Warn("save batch returned unexpected length", zap.Int("want", len(items)), zap.Int("got", len(saved)))
-		http.Error(w, "save failed", http.StatusInternalServerError)
-		return
-	}
-
 	// ответ собираем по сохранённым ссылкам: для адреса, который уже сокращали,
 	// хранилище возвращает выданную ранее ссылку, а не сгенерированную сейчас
-	resp := make([]models.ShortenBatchResponseItem, 0, len(saved))
-	for i, it := range saved {
+	resp := make([]models.ShortenBatchResponseItem, 0, len(shortURLs))
+	for i, shortURL := range shortURLs {
 		resp = append(resp, models.ShortenBatchResponseItem{
 			CorrelationID: req[i].CorrelationID,
-			ShortURL:      h.baseURL + "/" + it.ID,
+			ShortURL:      shortURL,
 		})
 	}
 
@@ -222,7 +181,8 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	originalURL, err := h.store.Get(r.Context(), id)
+	userID, _ := auth.UserIDFromContext(r.Context())
+	originalURL, err := h.svc.Expand(r.Context(), id, userID)
 	if errors.Is(err, storage.ErrNotFound) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -236,8 +196,6 @@ func (h *Handler) Redirect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "get failed", http.StatusInternalServerError)
 		return
 	}
-
-	h.notifyAudit(r, audit.ActionFollow, originalURL)
 
 	http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
 }
@@ -255,7 +213,7 @@ func (h *Handler) UserURLs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	urls, err := h.store.ListByUser(r.Context(), userID)
+	urls, err := h.svc.ListUserURLs(r.Context(), userID)
 	if err != nil {
 		h.log.Warn("list by user failed", zap.Error(err))
 		http.Error(w, "list failed", http.StatusInternalServerError)
@@ -266,24 +224,16 @@ func (h *Handler) UserURLs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := make([]models.UserURLItem, 0, len(urls))
-	for _, u := range urls {
-		resp = append(resp, models.UserURLItem{
-			ShortURL:    h.baseURL + "/" + u.ShortURL,
-			OriginalURL: u.OriginalURL,
-		})
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(urls)
 }
 
 // Stats обслуживает GET /api/internal/stats — отдаёт количество сокращённых
 // адресов и пользователей сервиса. Доступ к эндпоинту ограничен доверенной
 // подсетью, сам обработчик проверок не делает.
 func (h *Handler) Stats(w http.ResponseWriter, r *http.Request) {
-	stats, err := h.store.Stats(r.Context())
+	stats, err := h.svc.Stats(r.Context())
 	if err != nil {
 		h.log.Warn("stats failed", zap.Error(err))
 		http.Error(w, "stats failed", http.StatusInternalServerError)
@@ -318,20 +268,11 @@ func (h *Handler) DeleteUserURLs(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (h *Handler) notifyAudit(r *http.Request, action audit.Action, originalURL string) {
-	if h.auditor == nil {
-		return
+// shortenStatus выбирает код ответа: адрес, который уже сокращали, отдаётся
+// с 409, новый — с 201.
+func shortenStatus(conflict bool) int {
+	if conflict {
+		return http.StatusConflict
 	}
-	userID, _ := auth.UserIDFromContext(r.Context())
-	h.auditor.Notify(audit.NewEvent(action, userID, originalURL))
-}
-
-func generateID(n int) string {
-	rngMu.Lock()
-	defer rngMu.Unlock()
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = charset[rng.Intn(len(charset))]
-	}
-	return string(b)
+	return http.StatusCreated
 }

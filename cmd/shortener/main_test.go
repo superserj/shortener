@@ -20,6 +20,7 @@ import (
 	"github.com/superserj/shortener/internal/handler"
 	"github.com/superserj/shortener/internal/middleware"
 	"github.com/superserj/shortener/internal/models"
+	"github.com/superserj/shortener/internal/service"
 	"github.com/superserj/shortener/internal/storage"
 )
 
@@ -84,7 +85,7 @@ func TestServeStoppedServer(t *testing.T) {
 func TestNewRouterRoutes(t *testing.T) {
 	store := storage.NewMemStorage()
 	log := zap.NewNop()
-	h := handler.New(store, "http://localhost:8080", nil, noopDeleter{}, nil, log)
+	h := handler.New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, log)
 	trusted, err := middleware.TrustedSubnet("")
 	require.NoError(t, err)
 	r := newRouter(h, auth.New("test-secret"), trusted, log)
@@ -119,7 +120,7 @@ func TestNewRouterStats(t *testing.T) {
 	require.NoError(t, store.Save(ctx, "id1", "https://practicum.yandex.ru/", "user1"))
 
 	log := zap.NewNop()
-	h := handler.New(store, "http://localhost:8080", nil, noopDeleter{}, nil, log)
+	h := handler.New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, log)
 	trusted, err := middleware.TrustedSubnet("127.0.0.0/8")
 	require.NoError(t, err)
 

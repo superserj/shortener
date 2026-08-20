@@ -26,6 +26,7 @@ import (
 	"github.com/superserj/shortener/internal/handler"
 	"github.com/superserj/shortener/internal/logger"
 	"github.com/superserj/shortener/internal/middleware"
+	"github.com/superserj/shortener/internal/service"
 	"github.com/superserj/shortener/internal/storage"
 )
 
@@ -117,7 +118,8 @@ func main() {
 		close(auditDone)
 	}()
 
-	h := handler.New(store, cfg.BaseURL, pinger, del, aud, lg.With(zap.String("component", "handler")))
+	svc := service.New(store, cfg.BaseURL, aud)
+	h := handler.New(svc, pinger, del, lg.With(zap.String("component", "handler")))
 	a := auth.New(cfg.AuthSecret)
 
 	trusted, err := middleware.TrustedSubnet(cfg.TrustedSubnet)

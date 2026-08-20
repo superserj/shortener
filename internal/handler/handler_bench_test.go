@@ -12,18 +12,12 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/superserj/shortener/internal/auth"
+	"github.com/superserj/shortener/internal/service"
 	"github.com/superserj/shortener/internal/storage"
 )
 
-func BenchmarkGenerateID(b *testing.B) {
-	b.ReportAllocs()
-	for b.Loop() {
-		_ = generateID(8)
-	}
-}
-
 func BenchmarkShortenURL(b *testing.B) {
-	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+	h := New(service.New(storage.NewMemStorage(), "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
 	ctx := auth.WithUserID(context.Background(), "cd1a3f5e7b9d2c4a6e8f0b1d3a5c7e9f")
 
 	b.ReportAllocs()
@@ -40,7 +34,7 @@ func BenchmarkShortenURL(b *testing.B) {
 }
 
 func BenchmarkShortenAPI(b *testing.B) {
-	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+	h := New(service.New(storage.NewMemStorage(), "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
 	ctx := auth.WithUserID(context.Background(), "cd1a3f5e7b9d2c4a6e8f0b1d3a5c7e9f")
 
 	b.ReportAllocs()
@@ -60,7 +54,7 @@ func BenchmarkRedirect(b *testing.B) {
 	if err := store.Save(context.Background(), "benchid", "https://example.com/target", "u1"); err != nil {
 		b.Fatal(err)
 	}
-	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+	h := New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
 
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", "benchid")
