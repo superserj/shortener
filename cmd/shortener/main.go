@@ -17,15 +17,19 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/superserj/shortener/internal/audit"
 	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/cert"
 	"github.com/superserj/shortener/internal/config"
 	"github.com/superserj/shortener/internal/deleter"
+	"github.com/superserj/shortener/internal/grpcapi"
 	"github.com/superserj/shortener/internal/handler"
 	"github.com/superserj/shortener/internal/logger"
 	"github.com/superserj/shortener/internal/middleware"
+	"github.com/superserj/shortener/internal/pb"
 	"github.com/superserj/shortener/internal/service"
 	"github.com/superserj/shortener/internal/storage"
 )
@@ -129,6 +133,23 @@ func main() {
 
 	srv := &http.Server{Addr: cfg.ServerAddr, Handler: newRouter(h, a, trusted, lg), TLSConfig: tlsConfig}
 
+	// gRPC поднимается только с заданным адресом: пустая настройка оставляет
+	// сервис таким же, каким он был до появления второго транспорта
+	var grpcSrv *grpc.Server
+	if cfg.GRPCAddr != "" {
+		listener, listenErr := net.Listen("tcp", cfg.GRPCAddr)
+		if listenErr != nil {
+			lg.Fatal("listen grpc", zap.Error(listenErr))
+		}
+		grpcSrv = newGRPCServer(svc, a, tlsConfig, lg.With(zap.String("component", "grpc")))
+		go func() {
+			lg.Info("starting grpc server", zap.String("addr", cfg.GRPCAddr), zap.Bool("tls", tlsConfig != nil))
+			if err := grpcSrv.Serve(listener); err != nil {
+				lg.Error("grpc serve", zap.Error(err))
+			}
+		}()
+	}
+
 	go func() {
 		lg.Info("starting server", zap.String("addr", cfg.ServerAddr), zap.Bool("https", cfg.EnableHTTPS))
 		if err := serve(srv, cfg.EnableHTTPS); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -160,12 +181,34 @@ func main() {
 	if err := pprofSrv.Shutdown(shutdownCtx); err != nil {
 		lg.Error("pprof server shutdown", zap.Error(err))
 	}
+	if grpcSrv != nil {
+		grpcSrv.GracefulStop()
+	}
 
 	delCancel()
 	<-delDone
 
 	auditCancel()
 	<-auditDone
+}
+
+// newGRPCServer собирает gRPC-сервер с теми же зависимостями, что и HTTP:
+// перехватчики повторяют мидлвари логирования и аутентификации, а с включённым
+// HTTPS соединения защищает тот же самоподписанный сертификат.
+func newGRPCServer(svc *service.Service, a *auth.Authenticator, tlsConfig *tls.Config, log *zap.Logger) *grpc.Server {
+	opts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(
+			grpcapi.LoggingInterceptor(log),
+			grpcapi.AuthInterceptor(a, log),
+		),
+	}
+	if tlsConfig != nil {
+		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsConfig)))
+	}
+
+	srv := grpc.NewServer(opts...)
+	pb.RegisterShortenerServiceServer(srv, grpcapi.NewServer(svc, log))
+	return srv
 }
 
 // serve поднимает сервер в выбранном режиме. Сертификат и ключ для TLS уже

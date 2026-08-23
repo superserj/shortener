@@ -30,6 +30,7 @@ type Config struct {
 	AuditFile       string
 	AuditURL        string
 	TrustedSubnet   string
+	GRPCAddr        string
 	EnableHTTPS     bool
 	ConfigFile      string
 }
@@ -47,6 +48,7 @@ type fileConfig struct {
 	AuditFile       *string `json:"audit_file"`
 	AuditURL        *string `json:"audit_url"`
 	TrustedSubnet   *string `json:"trusted_subnet"`
+	GRPCAddr        *string `json:"grpc_address"`
 	EnableHTTPS     *bool   `json:"enable_https"`
 }
 
@@ -72,6 +74,7 @@ func parse(name string, args []string, lookupEnv func(string) (string, bool)) (*
 	fs.StringVar(&cfg.AuditFile, "audit-file", "", "path to audit log file, empty disables file audit")
 	fs.StringVar(&cfg.AuditURL, "audit-url", "", "url of remote audit sink, empty disables remote audit")
 	fs.StringVar(&cfg.TrustedSubnet, "t", "", "CIDR of the subnet allowed to read internal stats, empty forbids everyone")
+	fs.StringVar(&cfg.GRPCAddr, "g", "", "address to run gRPC server, empty leaves it disabled")
 	fs.StringVar(&cfg.ConfigFile, "c", "", "path to JSON config file")
 	fs.StringVar(&cfg.ConfigFile, "config", "", "path to JSON config file, long form of -c")
 
@@ -107,6 +110,7 @@ func parse(name string, args []string, lookupEnv func(string) (string, bool)) (*
 	envString("AUDIT_FILE", "audit-file", &cfg.AuditFile)
 	envString("AUDIT_URL", "audit-url", &cfg.AuditURL)
 	envString("TRUSTED_SUBNET", "t", &cfg.TrustedSubnet)
+	envString("GRPC_ADDRESS", "g", &cfg.GRPCAddr)
 
 	if v, ok := lookupEnv("ENABLE_HTTPS"); ok {
 		enabled, err := parseBool(v)
@@ -156,6 +160,7 @@ func applyFile(cfg *Config, set map[string]bool) error {
 	applyString(fc.AuditFile, "audit-file", set, &cfg.AuditFile)
 	applyString(fc.AuditURL, "audit-url", set, &cfg.AuditURL)
 	applyString(fc.TrustedSubnet, "t", set, &cfg.TrustedSubnet)
+	applyString(fc.GRPCAddr, "g", set, &cfg.GRPCAddr)
 
 	if fc.EnableHTTPS != nil && !set["s"] {
 		cfg.EnableHTTPS = *fc.EnableHTTPS

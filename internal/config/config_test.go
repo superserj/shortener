@@ -226,3 +226,23 @@ func TestParseTrustedSubnetFromFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.1.0/24", cfg.TrustedSubnet, "флаг сильнее файла")
 }
+
+func TestParseGRPCAddr(t *testing.T) {
+	cfg, err := parse("shortener", nil, noEnv)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.GRPCAddr, "по умолчанию gRPC не поднимается")
+
+	cfg, err = parse("shortener", []string{"-g", ":3200"}, noEnv)
+	require.NoError(t, err)
+	assert.Equal(t, ":3200", cfg.GRPCAddr)
+
+	path := writeConfig(t, `{"grpc_address": ":3300"}`)
+	cfg, err = parse("shortener", []string{"-c", path}, noEnv)
+	require.NoError(t, err)
+	assert.Equal(t, ":3300", cfg.GRPCAddr)
+
+	cfg, err = parse("shortener", []string{"-c", path},
+		envMap(map[string]string{"GRPC_ADDRESS": ":3400"}))
+	require.NoError(t, err)
+	assert.Equal(t, ":3400", cfg.GRPCAddr, "переменная окружения сильнее файла")
+}
