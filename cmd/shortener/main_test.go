@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,12 +15,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/config"
 	"github.com/superserj/shortener/internal/handler"
 	"github.com/superserj/shortener/internal/middleware"
 	"github.com/superserj/shortener/internal/models"
+	"github.com/superserj/shortener/internal/pb"
 	"github.com/superserj/shortener/internal/service"
 	"github.com/superserj/shortener/internal/storage"
 )
@@ -143,4 +148,26 @@ func TestNewRouterStats(t *testing.T) {
 	var stats models.StatsResponse
 	require.NoError(t, json.NewDecoder(res.Body).Decode(&stats))
 	assert.Equal(t, models.StatsResponse{URLs: 1, Users: 1}, stats)
+}
+
+func TestNewGRPCServer(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	svc := service.New(storage.NewMemStorage(), "http://localhost:8080", nil)
+	srv := newGRPCServer(svc, auth.New("test-secret"), nil, zap.NewNop())
+	go func() {
+		_ = srv.Serve(listener)
+	}()
+	defer srv.GracefulStop()
+
+	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer conn.Close()
+
+	client := pb.NewShortenerServiceClient(conn)
+	resp, err := client.ShortenURL(context.Background(),
+		pb.URLShortenRequest_builder{Url: proto.String("https://practicum.yandex.ru/")}.Build())
+	require.NoError(t, err)
+	assert.Contains(t, resp.GetResult(), "http://localhost:8080/")
 }
