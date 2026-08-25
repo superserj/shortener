@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -53,6 +54,27 @@ func TestMiddlewareIssuesCookieWhenAbsent(t *testing.T) {
 	assert.Equal(t, cookieName, res.Cookies()[0].Name)
 	assert.NotEmpty(t, observedUserID)
 	assert.False(t, observedInvalid)
+}
+
+func TestMiddlewareMarksCookieSecureOverTLS(t *testing.T) {
+	a := New("secret")
+	handler := a.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+
+	plain := httptest.NewRecorder()
+	handler.ServeHTTP(plain, httptest.NewRequest(http.MethodGet, "/", nil))
+	res := plain.Result()
+	defer res.Body.Close()
+	require.NotEmpty(t, res.Cookies())
+	assert.False(t, res.Cookies()[0].Secure, "по обычному HTTP кука без признака secure")
+
+	over := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.TLS = &tls.ConnectionState{}
+	handler.ServeHTTP(over, req)
+	secured := over.Result()
+	defer secured.Body.Close()
+	require.NotEmpty(t, secured.Cookies())
+	assert.True(t, secured.Cookies()[0].Secure, "по HTTPS кука помечается secure")
 }
 
 func TestMiddlewareKeepsValidCookie(t *testing.T) {

@@ -104,35 +104,65 @@ func (s *FileStorage) Save(ctx context.Context, id, url, userID string) error {
 		s.log.Warn("failed to persist record", zap.Error(err))
 		return err
 	}
+	if err := s.mem.Save(ctx, id, url, userID); err != nil {
+		return err
+	}
 	s.nextID++
-	return s.mem.Save(ctx, id, url, userID)
+	return nil
 }
 
-// SaveBatch сохраняет пачку ссылок одной записью в файл.
-func (s *FileStorage) SaveBatch(ctx context.Context, items []BatchItem, userID string) error {
+// SaveBatch сохраняет пачку ссылок одной записью в файл. В файл попадают только
+// новые адреса: для уже известного адреса возвращается выданная ранее ссылка, и
+// хранилище не копит записи, которые при загрузке всё равно будут отброшены.
+func (s *FileStorage) SaveBatch(ctx context.Context, items []BatchItem, userID string) ([]BatchItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	saved := make([]BatchItem, 0, len(items))
+	fresh := make([]BatchItem, 0, len(items))
+	// ссылки, выданные адресам в этой же пачке: в памяти их ещё нет
+	assigned := make(map[string]string, len(items))
+
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
-	for i, it := range items {
+	for _, it := range items {
+		existing, ok := s.mem.Find(it.URL)
+		if !ok {
+			existing, ok = assigned[it.URL]
+		}
+		if ok {
+			saved = append(saved, BatchItem{ID: existing, URL: it.URL})
+			continue
+		}
+
 		rec := &Record{
-			UUID:        strconv.Itoa(s.nextID + i + 1),
+			UUID:        strconv.Itoa(s.nextID + len(fresh) + 1),
 			ShortURL:    it.ID,
 			OriginalURL: it.URL,
 			UserID:      userID,
 		}
 		if err := enc.Encode(rec); err != nil {
 			s.log.Warn("failed to encode batch record", zap.Error(err))
-			return err
+			return nil, err
+		}
+		assigned[it.URL] = it.ID
+		fresh = append(fresh, it)
+		saved = append(saved, it)
+	}
+
+	if buf.Len() > 0 {
+		if _, err := s.file.Write(buf.Bytes()); err != nil {
+			s.log.Warn("failed to persist batch", zap.Error(err))
+			return nil, err
 		}
 	}
-	if _, err := s.file.Write(buf.Bytes()); err != nil {
-		s.log.Warn("failed to persist batch", zap.Error(err))
-		return err
+	if _, err := s.mem.SaveBatch(ctx, fresh, userID); err != nil {
+		return nil, err
 	}
-	s.nextID += len(items)
-	return s.mem.SaveBatch(ctx, items, userID)
+	// счётчик двигаем последним: пока пачка не принята целиком, нумерация
+	// уходит вперёд от того, что хранилище готово отдавать
+	s.nextID += len(fresh)
+	return saved, nil
 }
 
 // Get возвращает оригинальный адрес по короткой ссылке.

@@ -43,9 +43,12 @@ type UserURL struct {
 type Repository interface {
 	// Save сохраняет ссылку. Если адрес уже сокращали, возвращает ConflictError.
 	Save(ctx context.Context, id, url, userID string) error
-	// SaveBatch сохраняет пачку ссылок за одну операцию. Адреса, которые уже
-	// сокращали, пропускает, не возвращая ошибки.
-	SaveBatch(ctx context.Context, items []BatchItem, userID string) error
+	// SaveBatch сохраняет пачку ссылок за одну операцию и возвращает ссылки,
+	// под которыми адреса лежат в хранилище: для адреса, который уже сокращали,
+	// это выданная ранее короткая ссылка, а не переданная в items. Результат
+	// повторяет порядок и длину items, поэтому вызывающий код сопоставляет его
+	// с исходной пачкой по индексу.
+	SaveBatch(ctx context.Context, items []BatchItem, userID string) ([]BatchItem, error)
 	// Get возвращает оригинальный адрес по короткой ссылке.
 	Get(ctx context.Context, id string) (string, error)
 	// ListByUser возвращает ссылки пользователя, кроме удалённых.
@@ -100,17 +103,23 @@ func (s *MemStorage) Find(url string) (string, bool) {
 	return s.findByURL(url)
 }
 
-// SaveBatch сохраняет пачку ссылок, пропуская уже известные адреса.
-func (s *MemStorage) SaveBatch(_ context.Context, items []BatchItem, userID string) error {
+// SaveBatch сохраняет пачку ссылок. Для уже известного адреса возвращает
+// выданную ранее короткую ссылку, в том числе когда адрес повторяется внутри
+// самой пачки: повтор находится в хранилище сразу после сохранения первой копии.
+func (s *MemStorage) SaveBatch(_ context.Context, items []BatchItem, userID string) ([]BatchItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	saved := make([]BatchItem, 0, len(items))
 	for _, it := range items {
-		if _, ok := s.findByURL(it.URL); ok {
+		if existing, ok := s.findByURL(it.URL); ok {
+			saved = append(saved, BatchItem{ID: existing, URL: it.URL})
 			continue
 		}
 		s.urls[it.ID] = record{url: it.URL, userID: userID}
+		saved = append(saved, it)
 	}
-	return nil
+	return saved, nil
 }
 
 // Get возвращает оригинальный адрес по короткой ссылке. Для удалённой ссылки

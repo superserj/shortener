@@ -217,6 +217,46 @@ func TestShortenBatch(t *testing.T) {
 	}
 }
 
+func TestShortenBatchReturnsExistingShortURL(t *testing.T) {
+	store := storage.NewMemStorage()
+	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+	ctx := context.Background()
+
+	const known = "https://example.com/known"
+	require.NoError(t, store.Save(ctx, "known123", known, ""))
+
+	body := `[{"correlation_id":"a","original_url":"` + known + `"},` +
+		`{"correlation_id":"b","original_url":"https://example.com/dup"},` +
+		`{"correlation_id":"c","original_url":"https://example.com/dup"}]`
+
+	r := httptest.NewRequest(http.MethodPost, "/api/shorten/batch", strings.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.ShortenBatch(w, r)
+
+	res := w.Result()
+	defer res.Body.Close()
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+
+	var items []models.ShortenBatchResponseItem
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&items))
+	require.Len(t, items, 3)
+
+	assert.Equal(t, []string{"a", "b", "c"},
+		[]string{items[0].CorrelationID, items[1].CorrelationID, items[2].CorrelationID},
+		"correlation_id остаётся привязанным к своему адресу")
+	assert.Equal(t, "http://localhost:8080/known123", items[0].ShortURL,
+		"для известного адреса возвращается выданная ранее ссылка")
+	assert.Equal(t, items[1].ShortURL, items[2].ShortURL,
+		"повтор адреса внутри пачки получает ту же ссылку")
+
+	for _, it := range items {
+		id := strings.TrimPrefix(it.ShortURL, "http://localhost:8080/")
+		_, err := store.Get(ctx, id)
+		assert.NoError(t, err, "ссылка %s должна быть в хранилище", it.ShortURL)
+	}
+}
+
 func TestUserURLs(t *testing.T) {
 	const userID = "test-user"
 	ctx := auth.WithUserID(context.Background(), userID)
