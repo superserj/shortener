@@ -39,8 +39,10 @@ type UserURL struct {
 	OriginalURL string
 }
 
-// Stats — сводка по сервису. Удалённые ссылки в неё не попадают: сервис их
-// больше не обслуживает, поэтому в статистике доступных ссылок им не место.
+// Stats — сводка по сервису: сколько адресов через него сократили и сколько
+// пользователей это сделали. Удалённые ссылки из счётчиков не выпадают, иначе
+// удаление занижало бы историю сервиса, а пользователь, убравший последнюю
+// ссылку, переставал бы считаться его пользователем.
 type Stats struct {
 	// URLs — количество сокращённых адресов.
 	URLs int
@@ -176,25 +178,19 @@ func (s *MemStorage) ListByUser(_ context.Context, userID string) ([]UserURL, er
 	return result, nil
 }
 
-// Stats считает доступные ссылки и пользователей, которым они принадлежат.
+// Stats считает сокращённые ссылки и пользователей, которым они принадлежат.
 // Ссылки без пользователя в счётчик пользователей не идут.
 func (s *MemStorage) Stats(_ context.Context) (Stats, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var stats Stats
 	users := make(map[string]struct{}, len(s.urls))
 	for _, rec := range s.urls {
-		if rec.deleted {
-			continue
-		}
-		stats.URLs++
 		if rec.userID != "" {
 			users[rec.userID] = struct{}{}
 		}
 	}
-	stats.Users = len(users)
-	return stats, nil
+	return Stats{URLs: len(s.urls), Users: len(users)}, nil
 }
 
 // MarkDeleted помечает удалёнными ссылки, принадлежащие пользователю. Чужие

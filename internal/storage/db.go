@@ -216,13 +216,13 @@ func (s *DBStorage) ListByUser(ctx context.Context, userID string) ([]UserURL, e
 	return result, nil
 }
 
-// Stats возвращает количество доступных ссылок и пользователей, которым они
+// Stats возвращает количество сокращённых ссылок и пользователей, которым они
 // принадлежат. Оба счётчика считаются одним запросом: COUNT(DISTINCT user_id)
 // пропускает строки без пользователя.
 func (s *DBStorage) Stats(ctx context.Context) (Stats, error) {
 	var stats Stats
 	if err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*), COUNT(DISTINCT user_id) FROM short_urls WHERE is_deleted = FALSE`).
+		`SELECT COUNT(*), COUNT(DISTINCT user_id) FROM short_urls`).
 		Scan(&stats.URLs, &stats.Users); err != nil {
 		return Stats{}, err
 	}

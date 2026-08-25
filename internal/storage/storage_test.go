@@ -88,6 +88,6 @@ func TestMemStorageStats(t *testing.T) {
 
 	stats, err = s.Stats(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 3, stats.URLs, "удалённая ссылка выпадает из статистики")
-	assert.Equal(t, 1, stats.Users, "вместе с ней выпадает и её единственный владелец")
+	assert.Equal(t, 4, stats.URLs, "удаление не переписывает историю сервиса")
+	assert.Equal(t, 2, stats.Users, "и не отменяет пользователя, убравшего свою ссылку")
 }
