@@ -182,7 +182,7 @@ func main() {
 		lg.Error("pprof server shutdown", zap.Error(err))
 	}
 	if grpcSrv != nil {
-		grpcSrv.GracefulStop()
+		stopGRPC(shutdownCtx, grpcSrv)
 	}
 
 	delCancel()
@@ -190,6 +190,24 @@ func main() {
 
 	auditCancel()
 	<-auditDone
+}
+
+// stopGRPC останавливает gRPC-сервер, дожидаясь начатых вызовов. Ожидание
+// ограничено общим сроком остановки: зависший вызов не должен держать процесс,
+// которому уже пришёл сигнал.
+func stopGRPC(ctx context.Context, srv *grpc.Server) {
+	stopped := make(chan struct{})
+	go func() {
+		srv.GracefulStop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-ctx.Done():
+		srv.Stop()
+		<-stopped
+	}
 }
 
 // newGRPCServer собирает gRPC-сервер с теми же зависимостями, что и HTTP:
