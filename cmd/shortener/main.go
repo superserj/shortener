@@ -45,8 +45,8 @@ const (
 	errMissingPort = "missing port in address"
 )
 
-// newRouter собирает маршруты сервиса. Обработчик статистики закрыт отдельной
-// мидлварью: она пускает к нему только запросы из доверенной подсети.
+// newRouter собирает маршруты сервиса. Единственный маршрут с особым доступом —
+// статистика: к ней пускают только запросы из доверенной подсети.
 func newRouter(h *handler.Handler, a *auth.Authenticator, trusted func(http.Handler) http.Handler, log *zap.Logger) chi.Router {
 	r := chi.NewRouter()
 	r.Use(logger.WithLogging(log))
@@ -57,10 +57,22 @@ func newRouter(h *handler.Handler, a *auth.Authenticator, trusted func(http.Hand
 	r.Post("/api/shorten/batch", h.ShortenBatch)
 	r.Get("/api/user/urls", h.UserURLs)
 	r.Delete("/api/user/urls", h.DeleteUserURLs)
-	r.With(trusted).Get("/api/internal/stats", h.Stats)
+	r.Method(http.MethodGet, "/api/internal/stats", statsHandler(h, trusted))
 	r.Get("/ping", h.Ping)
 	r.Get("/{id}", h.Redirect)
 	return r
+}
+
+// statsHandler возвращает обработчик статистики, закрытый проверкой доверенной
+// подсети. Без настроенной подсети сверять адрес не с чем и доверять некому,
+// поэтому маршрут остаётся на месте, но отвечает отказом.
+func statsHandler(h *handler.Handler, trusted func(http.Handler) http.Handler) http.Handler {
+	if trusted == nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, middleware.ForbiddenMessage, http.StatusForbidden)
+		})
+	}
+	return trusted(http.HandlerFunc(h.Stats))
 }
 
 func main() {

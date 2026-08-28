@@ -62,19 +62,10 @@ func TestTrustedSubnetRejects(t *testing.T) {
 	}
 }
 
-func TestTrustedSubnetEmptyForbidsEveryone(t *testing.T) {
+func TestTrustedSubnetEmptyGivesNoMiddleware(t *testing.T) {
 	mw, err := TrustedSubnet("")
 	require.NoError(t, err)
-
-	called := false
-	req := httptest.NewRequest(http.MethodGet, "/api/internal/stats", nil)
-	req.Header.Set(realIPHeader, "192.168.1.15")
-	res := httptest.NewRecorder()
-
-	mw(okHandler(&called)).ServeHTTP(res, req)
-
-	assert.False(t, called)
-	assert.Equal(t, http.StatusForbidden, res.Code)
+	assert.Nil(t, mw, "сверять адрес не с чем, мидлварь не нужна")
 }
 
 func TestTrustedSubnetRejectsBrokenCIDR(t *testing.T) {

@@ -93,6 +93,7 @@ func TestNewRouterRoutes(t *testing.T) {
 	h := handler.New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, log)
 	trusted, err := middleware.TrustedSubnet("")
 	require.NoError(t, err)
+	require.Nil(t, trusted, "без подсети мидлварь не создаётся")
 	r := newRouter(h, auth.New("test-secret"), trusted, log)
 
 	srv := httptest.NewServer(r)
@@ -117,6 +118,11 @@ func TestNewRouterRoutes(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, res.Body.Close())
 	assert.Equal(t, http.StatusInternalServerError, res.StatusCode, "без базы ping отвечает ошибкой")
+
+	res, err = client.Get(srv.URL + "/api/internal/stats")
+	require.NoError(t, err)
+	require.NoError(t, res.Body.Close())
+	assert.Equal(t, http.StatusForbidden, res.StatusCode, "без доверенной подсети статистика закрыта")
 }
 
 func TestNewRouterStats(t *testing.T) {
