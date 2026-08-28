@@ -59,6 +59,8 @@ git fetch template && git checkout template/v2 .github
 | `-auth-secret` | `AUTH_SECRET` | `shortener-default-secret` | `auth_secret` |
 | `-audit-file` | `AUDIT_FILE` | пусто | `audit_file` |
 | `-audit-url` | `AUDIT_URL` | пусто | `audit_url` |
+| `-t` | `TRUSTED_SUBNET` | пусто | `trusted_subnet` |
+| `-g` | `GRPC_ADDRESS` | пусто | `grpc_address` |
 | `-c`, `-config` | `CONFIG` | пусто | — |
 
 Путь к файлу конфигурации задаётся флагом `-c` (то же самое — `-config`) или
@@ -67,10 +69,12 @@ git fetch template && git checkout template/v2 .github
 ```json
 {
     "server_address": "localhost:8080",
-    "base_url": "http://localhost:8080",
+    "base_url": "https://localhost:8080",
     "file_storage_path": "/tmp/short-url-db.json",
     "database_dsn": "",
-    "enable_https": true
+    "enable_https": true,
+    "trusted_subnet": "192.168.1.0/24",
+    "grpc_address": "localhost:3200"
 }
 ```
 
@@ -94,6 +98,48 @@ go run ./cmd/shortener -s -a localhost:8443 -b https://localhost:8443
 в этом режиме помечается признаком `Secure`.
 
 Клиенту такой сертификат неизвестен, поэтому для проверки удобен `curl -k`.
+
+## Внутренняя статистика
+
+`GET /api/internal/stats` отдаёт количество сокращённых ссылок и число
+пользователей, которые их создали. Доступ к нему ограничен доверенной подсетью:
+адрес клиента берётся из заголовка `X-Real-IP`, и запрос с адресом из другой
+сети получает 403. Пока подсеть не задана, статистика закрыта для всех:
+
+```
+go run ./cmd/shortener -t 192.168.1.0/24
+```
+
+## gRPC
+
+С заданным адресом в `-g` рядом с HTTP поднимается gRPC-сервер: служба
+`ShortenerService` повторяет сокращение адреса, переход по короткой ссылке и
+список ссылок пользователя. Пустой адрес оставляет транспорт выключенным, и
+сервис работает так же, как до его появления:
+
+```
+go run ./cmd/shortener -g localhost:3200
+```
+
+Пользователь опознаётся по метаданным запроса: подписанный токен ездит под
+ключом `authorization` — то же самое, что кука в HTTP. Запросу без токена служба
+заводит нового пользователя и возвращает его токен в заголовках ответа. С
+флагом `-s` соединения защищает тот же самоподписанный сертификат, что и в
+HTTPS-режиме.
+
+Контракт службы описан в `api/proto/shortener.proto`, сгенерированный по нему
+код лежит в `internal/pb`. Пересобирается он так (нужен `protoc` не ниже v32 и
+плагины `protoc-gen-go`, `protoc-gen-go-grpc`):
+
+```
+protoc --go_out=internal/pb --go_opt=paths=source_relative \
+       --go_opt=default_api_level=API_OPAQUE \
+       --go-grpc_out=internal/pb --go-grpc_opt=paths=source_relative \
+       -I api/proto api/proto/shortener.proto
+```
+
+Уровень API задан флагом: без `default_api_level=API_OPAQUE` генератор выдаст
+код старого вида, и сборка развалится на билдерах сообщений.
 
 ## Остановка
 
