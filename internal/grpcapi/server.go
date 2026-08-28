@@ -12,7 +12,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/pb"
@@ -81,7 +80,7 @@ func (s *Server) ExpandURL(ctx context.Context, in *pb.URLExpandRequest) (*pb.UR
 
 // ListUserURLs возвращает ссылки текущего пользователя. Пользователя опознаёт
 // перехватчик, поэтому здесь остаётся только проверить, что он известен.
-func (s *Server) ListUserURLs(ctx context.Context, _ *emptypb.Empty) (*pb.UserURLsResponse, error) {
+func (s *Server) ListUserURLs(ctx context.Context, _ *pb.ListUserURLsRequest) (*pb.UserURLsResponse, error) {
 	userID, ok := auth.UserIDFromContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "user is unknown")

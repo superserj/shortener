@@ -11,7 +11,6 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -33,7 +32,7 @@ const (
 type ShortenerServiceClient interface {
 	ShortenURL(ctx context.Context, in *URLShortenRequest, opts ...grpc.CallOption) (*URLShortenResponse, error)
 	ExpandURL(ctx context.Context, in *URLExpandRequest, opts ...grpc.CallOption) (*URLExpandResponse, error)
-	ListUserURLs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*UserURLsResponse, error)
+	ListUserURLs(ctx context.Context, in *ListUserURLsRequest, opts ...grpc.CallOption) (*UserURLsResponse, error)
 }
 
 type shortenerServiceClient struct {
@@ -64,7 +63,7 @@ func (c *shortenerServiceClient) ExpandURL(ctx context.Context, in *URLExpandReq
 	return out, nil
 }
 
-func (c *shortenerServiceClient) ListUserURLs(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*UserURLsResponse, error) {
+func (c *shortenerServiceClient) ListUserURLs(ctx context.Context, in *ListUserURLsRequest, opts ...grpc.CallOption) (*UserURLsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UserURLsResponse)
 	err := c.cc.Invoke(ctx, ShortenerService_ListUserURLs_FullMethodName, in, out, cOpts...)
@@ -82,7 +81,7 @@ func (c *shortenerServiceClient) ListUserURLs(ctx context.Context, in *emptypb.E
 type ShortenerServiceServer interface {
 	ShortenURL(context.Context, *URLShortenRequest) (*URLShortenResponse, error)
 	ExpandURL(context.Context, *URLExpandRequest) (*URLExpandResponse, error)
-	ListUserURLs(context.Context, *emptypb.Empty) (*UserURLsResponse, error)
+	ListUserURLs(context.Context, *ListUserURLsRequest) (*UserURLsResponse, error)
 	mustEmbedUnimplementedShortenerServiceServer()
 }
 
@@ -99,7 +98,7 @@ func (UnimplementedShortenerServiceServer) ShortenURL(context.Context, *URLShort
 func (UnimplementedShortenerServiceServer) ExpandURL(context.Context, *URLExpandRequest) (*URLExpandResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ExpandURL not implemented")
 }
-func (UnimplementedShortenerServiceServer) ListUserURLs(context.Context, *emptypb.Empty) (*UserURLsResponse, error) {
+func (UnimplementedShortenerServiceServer) ListUserURLs(context.Context, *ListUserURLsRequest) (*UserURLsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListUserURLs not implemented")
 }
 func (UnimplementedShortenerServiceServer) mustEmbedUnimplementedShortenerServiceServer() {}
@@ -160,7 +159,7 @@ func _ShortenerService_ExpandURL_Handler(srv interface{}, ctx context.Context, d
 }
 
 func _ShortenerService_ListUserURLs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(emptypb.Empty)
+	in := new(ListUserURLsRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -172,7 +171,7 @@ func _ShortenerService_ListUserURLs_Handler(srv interface{}, ctx context.Context
 		FullMethod: ShortenerService_ListUserURLs_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ShortenerServiceServer).ListUserURLs(ctx, req.(*emptypb.Empty))
+		return srv.(ShortenerServiceServer).ListUserURLs(ctx, req.(*ListUserURLsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }

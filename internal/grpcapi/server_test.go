@@ -15,7 +15,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/pb"
@@ -26,8 +25,8 @@ import (
 const (
 	testBaseURL = "http://localhost:8080"
 	testSecret  = "test-secret"
-	// bufSize — размер буфера соединения в тестах: сообщения сервиса короткие,
-	// килобайта хватает с запасом
+	// bufSize — размер буфера соединения в тестах: мегабайта хватает с запасом,
+	// сообщения службы куда короче
 	bufSize = 1024 * 1024
 )
 
@@ -145,7 +144,7 @@ func TestListUserURLs(t *testing.T) {
 	require.NotEmpty(t, token)
 
 	authCtx := metadata.AppendToOutgoingContext(ctx, authMetadataKey, token)
-	resp, err := client.ListUserURLs(authCtx, &emptypb.Empty{})
+	resp, err := client.ListUserURLs(authCtx, pb.ListUserURLsRequest_builder{}.Build())
 	require.NoError(t, err)
 
 	require.Len(t, resp.GetUrl(), 1, "со своим токеном пользователь видит свою ссылку")
@@ -154,7 +153,7 @@ func TestListUserURLs(t *testing.T) {
 
 	// без токена запрос обслуживается как первый визит: ссылок у нового
 	// пользователя нет
-	resp, err = client.ListUserURLs(ctx, &emptypb.Empty{})
+	resp, err = client.ListUserURLs(ctx, pb.ListUserURLsRequest_builder{}.Build())
 	require.NoError(t, err)
 	assert.Empty(t, resp.GetUrl())
 }
@@ -163,8 +162,17 @@ func TestListUserURLsBrokenToken(t *testing.T) {
 	ctx := metadata.AppendToOutgoingContext(context.Background(), authMetadataKey, "user1:deadbeef")
 	client := newTestClient(t, storage.NewMemStorage())
 
-	_, err := client.ListUserURLs(ctx, &emptypb.Empty{})
+	_, err := client.ListUserURLs(ctx, pb.ListUserURLsRequest_builder{}.Build())
 	assert.Equal(t, codes.Unauthenticated, status.Code(err), "подделанный токен не пропускается")
+}
+
+// Служба вызывается напрямую, минуя перехватчик: он опознаёт пользователя сам,
+// поэтому проверить отказ неизвестному можно только без него.
+func TestListUserURLsUnknownUser(t *testing.T) {
+	srv := NewServer(service.New(storage.NewMemStorage(), testBaseURL, nil), zap.NewNop())
+
+	_, err := srv.ListUserURLs(context.Background(), pb.ListUserURLsRequest_builder{}.Build())
+	assert.Equal(t, codes.Unauthenticated, status.Code(err))
 }
 
 func TestStorageFailure(t *testing.T) {
@@ -177,6 +185,6 @@ func TestStorageFailure(t *testing.T) {
 	_, err = client.ExpandURL(ctx, pb.URLExpandRequest_builder{Id: proto.String("id1")}.Build())
 	assert.Equal(t, codes.Internal, status.Code(err))
 
-	_, err = client.ListUserURLs(ctx, &emptypb.Empty{})
+	_, err = client.ListUserURLs(ctx, pb.ListUserURLsRequest_builder{}.Build())
 	assert.Equal(t, codes.Internal, status.Code(err))
 }

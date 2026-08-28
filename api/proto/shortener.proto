@@ -2,8 +2,6 @@ edition = "2023";
 
 package shortener;
 
-import "google/protobuf/empty.proto";
-
 option go_package = "github.com/superserj/shortener/internal/pb";
 
 // URLShortenRequest — запрос на сокращение адреса.
@@ -26,6 +24,11 @@ message URLExpandResponse {
   string result = 1;
 }
 
+// ListUserURLsRequest — запрос ссылок текущего пользователя. Пользователя
+// служба узнаёт из метаданных, поэтому полей у запроса пока нет: собственный
+// тип оставляет место для них, не ломая уже собранных клиентов.
+message ListUserURLsRequest {}
+
 // UserURLsResponse — ссылки, сокращённые текущим пользователем.
 message UserURLsResponse {
   repeated URLData url = 1;
@@ -41,5 +44,5 @@ message URLData {
 service ShortenerService {
   rpc ShortenURL (URLShortenRequest) returns (URLShortenResponse);
   rpc ExpandURL (URLExpandRequest) returns (URLExpandResponse);
-  rpc ListUserURLs (google.protobuf.Empty) returns (UserURLsResponse);
+  rpc ListUserURLs (ListUserURLsRequest) returns (UserURLsResponse);
 }
