@@ -175,6 +175,11 @@ func (s *FileStorage) ListByUser(ctx context.Context, userID string) ([]UserURL,
 	return s.mem.ListByUser(ctx, userID)
 }
 
+// Stats возвращает количество ссылок и пользователей.
+func (s *FileStorage) Stats(ctx context.Context) (Stats, error) {
+	return s.mem.Stats(ctx)
+}
+
 // MarkDeleted помечает ссылки удалёнными и фиксирует это в файле.
 func (s *FileStorage) MarkDeleted(ctx context.Context, userID string, ids []string) error {
 	if userID == "" || len(ids) == 0 {

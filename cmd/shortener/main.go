@@ -17,15 +17,20 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/superserj/shortener/internal/audit"
 	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/cert"
 	"github.com/superserj/shortener/internal/config"
 	"github.com/superserj/shortener/internal/deleter"
+	"github.com/superserj/shortener/internal/grpcapi"
 	"github.com/superserj/shortener/internal/handler"
 	"github.com/superserj/shortener/internal/logger"
 	"github.com/superserj/shortener/internal/middleware"
+	"github.com/superserj/shortener/internal/pb"
+	"github.com/superserj/shortener/internal/service"
 	"github.com/superserj/shortener/internal/storage"
 )
 
@@ -40,7 +45,9 @@ const (
 	errMissingPort = "missing port in address"
 )
 
-func newRouter(h *handler.Handler, a *auth.Authenticator, log *zap.Logger) chi.Router {
+// newRouter собирает маршруты сервиса. Единственный маршрут с особым доступом —
+// статистика: к ней пускают только запросы из доверенной подсети.
+func newRouter(h *handler.Handler, a *auth.Authenticator, trusted func(http.Handler) http.Handler, log *zap.Logger) chi.Router {
 	r := chi.NewRouter()
 	r.Use(logger.WithLogging(log))
 	r.Use(middleware.Gzip)
@@ -50,9 +57,22 @@ func newRouter(h *handler.Handler, a *auth.Authenticator, log *zap.Logger) chi.R
 	r.Post("/api/shorten/batch", h.ShortenBatch)
 	r.Get("/api/user/urls", h.UserURLs)
 	r.Delete("/api/user/urls", h.DeleteUserURLs)
+	r.Method(http.MethodGet, "/api/internal/stats", statsHandler(h, trusted))
 	r.Get("/ping", h.Ping)
 	r.Get("/{id}", h.Redirect)
 	return r
+}
+
+// statsHandler возвращает обработчик статистики, закрытый проверкой доверенной
+// подсети. Без настроенной подсети сверять адрес не с чем и доверять некому,
+// поэтому маршрут остаётся на месте, но отвечает отказом.
+func statsHandler(h *handler.Handler, trusted func(http.Handler) http.Handler) http.Handler {
+	if trusted == nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, middleware.ForbiddenMessage, http.StatusForbidden)
+		})
+	}
+	return trusted(http.HandlerFunc(h.Stats))
 }
 
 func main() {
@@ -114,10 +134,33 @@ func main() {
 		close(auditDone)
 	}()
 
-	h := handler.New(store, cfg.BaseURL, pinger, del, aud, lg.With(zap.String("component", "handler")))
+	svc := service.New(store, cfg.BaseURL, aud)
+	h := handler.New(svc, pinger, del, lg.With(zap.String("component", "handler")))
 	a := auth.New(cfg.AuthSecret)
 
-	srv := &http.Server{Addr: cfg.ServerAddr, Handler: newRouter(h, a, lg), TLSConfig: tlsConfig}
+	trusted, err := middleware.TrustedSubnet(cfg.TrustedSubnet)
+	if err != nil {
+		lg.Fatal("init trusted subnet", zap.Error(err))
+	}
+
+	srv := &http.Server{Addr: cfg.ServerAddr, Handler: newRouter(h, a, trusted, lg), TLSConfig: tlsConfig}
+
+	// gRPC поднимается только с заданным адресом: пустая настройка оставляет
+	// сервис таким же, каким он был до появления второго транспорта
+	var grpcSrv *grpc.Server
+	if cfg.GRPCAddr != "" {
+		listener, listenErr := net.Listen("tcp", cfg.GRPCAddr)
+		if listenErr != nil {
+			lg.Fatal("listen grpc", zap.Error(listenErr))
+		}
+		grpcSrv = newGRPCServer(svc, a, tlsConfig, lg.With(zap.String("component", "grpc")))
+		go func() {
+			lg.Info("starting grpc server", zap.String("addr", cfg.GRPCAddr), zap.Bool("tls", tlsConfig != nil))
+			if err := grpcSrv.Serve(listener); err != nil {
+				lg.Error("grpc serve", zap.Error(err))
+			}
+		}()
+	}
 
 	go func() {
 		lg.Info("starting server", zap.String("addr", cfg.ServerAddr), zap.Bool("https", cfg.EnableHTTPS))
@@ -150,12 +193,52 @@ func main() {
 	if err := pprofSrv.Shutdown(shutdownCtx); err != nil {
 		lg.Error("pprof server shutdown", zap.Error(err))
 	}
+	if grpcSrv != nil {
+		stopGRPC(shutdownCtx, grpcSrv)
+	}
 
 	delCancel()
 	<-delDone
 
 	auditCancel()
 	<-auditDone
+}
+
+// stopGRPC останавливает gRPC-сервер, дожидаясь начатых вызовов. Ожидание
+// ограничено общим сроком остановки: зависший вызов не должен держать процесс,
+// которому уже пришёл сигнал.
+func stopGRPC(ctx context.Context, srv *grpc.Server) {
+	stopped := make(chan struct{})
+	go func() {
+		srv.GracefulStop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-ctx.Done():
+		srv.Stop()
+		<-stopped
+	}
+}
+
+// newGRPCServer собирает gRPC-сервер с теми же зависимостями, что и HTTP:
+// перехватчики повторяют мидлвари логирования и аутентификации, а с включённым
+// HTTPS соединения защищает тот же самоподписанный сертификат.
+func newGRPCServer(svc *service.Service, a *auth.Authenticator, tlsConfig *tls.Config, log *zap.Logger) *grpc.Server {
+	opts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(
+			grpcapi.LoggingInterceptor(log),
+			grpcapi.AuthInterceptor(a, log),
+		),
+	}
+	if tlsConfig != nil {
+		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsConfig)))
+	}
+
+	srv := grpc.NewServer(opts...)
+	pb.RegisterShortenerServiceServer(srv, grpcapi.NewServer(svc, log))
+	return srv
 }
 
 // serve поднимает сервер в выбранном режиме. Сертификат и ключ для TLS уже

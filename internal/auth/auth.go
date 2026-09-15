@@ -72,7 +72,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		cookie, err := r.Cookie(cookieName)
 		switch {
 		case errors.Is(err, http.ErrNoCookie):
-			userID, issueErr := newUserID()
+			userID, issueErr := NewUserID()
 			if issueErr != nil {
 				http.Error(w, "failed to issue user id", http.StatusInternalServerError)
 				return
@@ -118,7 +118,9 @@ func (a *Authenticator) makeCookie(userID string, secure bool) *http.Cookie {
 	}
 }
 
-func newUserID() (string, error) {
+// NewUserID выдаёт идентификатор нового пользователя. Он нужен и HTTP-мидлвари,
+// и перехватчику gRPC: оба заводят пользователя при первом обращении.
+func NewUserID() (string, error) {
 	buf := make([]byte, userIDByteLen)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err

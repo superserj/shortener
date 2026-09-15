@@ -1,0 +1,48 @@
+edition = "2023";
+
+package shortener;
+
+option go_package = "github.com/superserj/shortener/internal/pb";
+
+// URLShortenRequest — запрос на сокращение адреса.
+message URLShortenRequest {
+  string url = 1;
+}
+
+// URLShortenResponse — короткая ссылка на сокращённый адрес.
+message URLShortenResponse {
+  string result = 1;
+}
+
+// URLExpandRequest — запрос оригинального адреса по короткой ссылке.
+message URLExpandRequest {
+  string id = 1;
+}
+
+// URLExpandResponse — оригинальный адрес.
+message URLExpandResponse {
+  string result = 1;
+}
+
+// ListUserURLsRequest — запрос ссылок текущего пользователя. Пользователя
+// служба узнаёт из метаданных, поэтому полей у запроса пока нет: собственный
+// тип оставляет место для них, не ломая уже собранных клиентов.
+message ListUserURLsRequest {}
+
+// UserURLsResponse — ссылки, сокращённые текущим пользователем.
+message UserURLsResponse {
+  repeated URLData url = 1;
+}
+
+// URLData — пара «короткая ссылка — оригинальный адрес».
+message URLData {
+  string short_url = 1;
+  string original_url = 2;
+}
+
+// ShortenerService повторяет по gRPC те же операции, что сервис отдаёт по HTTP.
+service ShortenerService {
+  rpc ShortenURL (URLShortenRequest) returns (URLShortenResponse);
+  rpc ExpandURL (URLExpandRequest) returns (URLExpandResponse);
+  rpc ListUserURLs (ListUserURLsRequest) returns (UserURLsResponse);
+}

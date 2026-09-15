@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,12 +18,39 @@ import (
 	"github.com/superserj/shortener/internal/audit"
 	"github.com/superserj/shortener/internal/auth"
 	"github.com/superserj/shortener/internal/models"
+	"github.com/superserj/shortener/internal/service"
 	"github.com/superserj/shortener/internal/storage"
 )
 
 type noopDeleter struct{}
 
 func (noopDeleter) Enqueue(_ string, _ []string) {}
+
+// failingStore подставляется вместо хранилища, чтобы проверить ответы на его
+// ошибки. Все методы отвечают одинаково — errStoreUnavailable.
+type failingStore struct{}
+
+var errStoreUnavailable = errors.New("storage unavailable")
+
+func (failingStore) Save(_ context.Context, _, _, _ string) error { return errStoreUnavailable }
+
+func (failingStore) SaveBatch(_ context.Context, _ []storage.BatchItem, _ string) ([]storage.BatchItem, error) {
+	return nil, errStoreUnavailable
+}
+
+func (failingStore) Get(_ context.Context, _ string) (string, error) { return "", errStoreUnavailable }
+
+func (failingStore) ListByUser(_ context.Context, _ string) ([]storage.UserURL, error) {
+	return nil, errStoreUnavailable
+}
+
+func (failingStore) MarkDeleted(_ context.Context, _ string, _ []string) error {
+	return errStoreUnavailable
+}
+
+func (failingStore) Stats(_ context.Context) (storage.Stats, error) {
+	return storage.Stats{}, errStoreUnavailable
+}
 
 type recordDeleter struct {
 	userID string
@@ -51,7 +79,7 @@ func setupRouter(h *Handler) chi.Router {
 
 func TestShortenURL(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+	h := New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
 
 	tests := []struct {
 		name       string
@@ -94,7 +122,7 @@ func TestShortenURL(t *testing.T) {
 
 func TestShortenURLConflict(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+	h := New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
 
 	const url = "https://practicum.yandex.ru/"
 
@@ -115,7 +143,7 @@ func TestShortenURLConflict(t *testing.T) {
 
 func TestShortenAPI(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+	h := New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
 
 	tests := []struct {
 		name       string
@@ -163,7 +191,7 @@ func TestShortenAPI(t *testing.T) {
 
 func TestShortenBatch(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+	h := New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
 
 	tests := []struct {
 		name       string
@@ -219,7 +247,7 @@ func TestShortenBatch(t *testing.T) {
 
 func TestShortenBatchReturnsExistingShortURL(t *testing.T) {
 	store := storage.NewMemStorage()
-	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+	h := New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
 	ctx := context.Background()
 
 	const known = "https://example.com/known"
@@ -266,7 +294,7 @@ func TestUserURLs(t *testing.T) {
 	require.NoError(t, store.Save(ctx, "cd2", "https://example.com/", userID))
 	require.NoError(t, store.Save(ctx, "zz9", "https://other.example.com/", "another-user"))
 
-	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+	h := New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
 
 	t.Run("returns urls for current user", func(t *testing.T) {
 		r := httptest.NewRequest(http.MethodGet, "/api/user/urls", nil).WithContext(ctx)
@@ -312,7 +340,7 @@ func TestDeleteUserURLs(t *testing.T) {
 
 	t.Run("accepts ids and enqueues for user", func(t *testing.T) {
 		rec := &recordDeleter{}
-		h := New(store, "http://localhost:8080", nil, rec, nil, zap.NewNop())
+		h := New(service.New(store, "http://localhost:8080", nil), nil, rec, zap.NewNop())
 
 		body := strings.NewReader(`["a","b","c"]`)
 		r := httptest.NewRequest(http.MethodDelete, "/api/user/urls", body).
@@ -326,7 +354,7 @@ func TestDeleteUserURLs(t *testing.T) {
 	})
 
 	t.Run("rejects without user", func(t *testing.T) {
-		h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+		h := New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
 
 		body := strings.NewReader(`["a"]`)
 		r := httptest.NewRequest(http.MethodDelete, "/api/user/urls", body)
@@ -337,7 +365,7 @@ func TestDeleteUserURLs(t *testing.T) {
 	})
 
 	t.Run("rejects invalid json", func(t *testing.T) {
-		h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+		h := New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
 
 		body := strings.NewReader(`not-json`)
 		r := httptest.NewRequest(http.MethodDelete, "/api/user/urls", body).
@@ -350,7 +378,7 @@ func TestDeleteUserURLs(t *testing.T) {
 }
 
 func TestPingWithoutDB(t *testing.T) {
-	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+	h := New(service.New(storage.NewMemStorage(), "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
 
 	r := httptest.NewRequest(http.MethodGet, "/ping", nil)
 	w := httptest.NewRecorder()
@@ -366,7 +394,7 @@ func TestPingWithoutDB(t *testing.T) {
 func TestRedirect(t *testing.T) {
 	store := storage.NewMemStorage()
 	require.NoError(t, store.Save(context.Background(), "testid", "https://practicum.yandex.ru/", ""))
-	h := New(store, "http://localhost:8080", nil, noopDeleter{}, nil, zap.NewNop())
+	h := New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
 
 	require.NoError(t, store.Save(context.Background(), "deletedid", "https://gone.example.com/", "owner"))
 	require.NoError(t, store.MarkDeleted(context.Background(), "owner", []string{"deletedid"}))
@@ -421,7 +449,7 @@ func TestRedirect(t *testing.T) {
 
 func TestAuditOnShorten(t *testing.T) {
 	rec := &recordAuditor{}
-	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{}, rec, zap.NewNop())
+	h := New(service.New(storage.NewMemStorage(), "http://localhost:8080", rec), nil, noopDeleter{}, zap.NewNop())
 
 	const url = "https://practicum.yandex.ru/"
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(url))
@@ -440,7 +468,7 @@ func TestAuditOnShorten(t *testing.T) {
 
 func TestAuditOnShortenAPI(t *testing.T) {
 	rec := &recordAuditor{}
-	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{}, rec, zap.NewNop())
+	h := New(service.New(storage.NewMemStorage(), "http://localhost:8080", rec), nil, noopDeleter{}, zap.NewNop())
 
 	body := `{"url":"https://practicum.yandex.ru/"}`
 	w := httptest.NewRecorder()
@@ -457,7 +485,7 @@ func TestAuditOnRedirect(t *testing.T) {
 	require.NoError(t, store.Save(context.Background(), "testid", "https://practicum.yandex.ru/", ""))
 
 	rec := &recordAuditor{}
-	h := New(store, "http://localhost:8080", nil, noopDeleter{}, rec, zap.NewNop())
+	h := New(service.New(store, "http://localhost:8080", rec), nil, noopDeleter{}, zap.NewNop())
 
 	r := httptest.NewRequest(http.MethodGet, "/testid", nil)
 	ctx := chi.NewRouteContext()
@@ -475,7 +503,7 @@ func TestAuditOnRedirect(t *testing.T) {
 
 func TestAuditOnShortenConflict(t *testing.T) {
 	rec := &recordAuditor{}
-	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{}, rec, zap.NewNop())
+	h := New(service.New(storage.NewMemStorage(), "http://localhost:8080", rec), nil, noopDeleter{}, zap.NewNop())
 
 	const url = "https://practicum.yandex.ru/"
 	h.ShortenURL(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(url)))
@@ -492,7 +520,7 @@ func TestAuditOnShortenConflict(t *testing.T) {
 func TestNoAuditOnFailedRequests(t *testing.T) {
 	store := storage.NewMemStorage()
 	rec := &recordAuditor{}
-	h := New(store, "http://localhost:8080", nil, noopDeleter{}, rec, zap.NewNop())
+	h := New(service.New(store, "http://localhost:8080", rec), nil, noopDeleter{}, zap.NewNop())
 
 	h.ShortenURL(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader("")))
 
@@ -507,7 +535,7 @@ func TestNoAuditOnFailedRequests(t *testing.T) {
 
 func TestNoAuditOnBatch(t *testing.T) {
 	rec := &recordAuditor{}
-	h := New(storage.NewMemStorage(), "http://localhost:8080", nil, noopDeleter{}, rec, zap.NewNop())
+	h := New(service.New(storage.NewMemStorage(), "http://localhost:8080", rec), nil, noopDeleter{}, zap.NewNop())
 
 	body := `[{"correlation_id":"1","original_url":"https://practicum.yandex.ru/"}]`
 	w := httptest.NewRecorder()
@@ -515,4 +543,34 @@ func TestNoAuditOnBatch(t *testing.T) {
 	require.Equal(t, http.StatusCreated, w.Result().StatusCode)
 
 	assert.Empty(t, rec.events, "батч в списке аудируемых хэндлеров не значится")
+}
+
+func TestStats(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemStorage()
+	require.NoError(t, store.Save(ctx, "id1", "https://example.com/1", "user1"))
+	require.NoError(t, store.Save(ctx, "id2", "https://example.com/2", "user2"))
+
+	h := New(service.New(store, "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/stats", nil)
+	res := httptest.NewRecorder()
+	h.Stats(res, req)
+
+	require.Equal(t, http.StatusOK, res.Code)
+	assert.Equal(t, "application/json", res.Header().Get("Content-Type"))
+
+	var got models.StatsResponse
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&got))
+	assert.Equal(t, models.StatsResponse{URLs: 2, Users: 2}, got)
+}
+
+func TestStatsStorageFailure(t *testing.T) {
+	h := New(service.New(failingStore{}, "http://localhost:8080", nil), nil, noopDeleter{}, zap.NewNop())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/stats", nil)
+	res := httptest.NewRecorder()
+	h.Stats(res, req)
+
+	assert.Equal(t, http.StatusInternalServerError, res.Code)
 }
